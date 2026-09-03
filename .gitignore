@@ -1,0 +1,39 @@
+# Local workspace metadata
+.agents/
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
+docs/
+tests/
+signing/
+
+# Build and package output
+.cache/
+.idea/
+.vs/
+.vscode/
+.xmake/
+build/
+node_modules/
+vs*/
+*.dll
+*.exp
+*.ilk
+*.lib
+*.log
+*.pdb
+*.zip
+compile_commands.json
+
+# Local credentials and certificates
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pem
+*.pfx
+
+# Generated plugin; commit the Spriggit source instead
+*.esp

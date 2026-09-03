@@ -1,0 +1,14 @@
+FormKey: 000800:Tailor.esp
+EditorID: Tailor_DummyEffect
+Name:
+  TargetLanguage: English
+  Value: ''
+Flags:
+- NoArea
+- HideInUI
+- NoRecast
+- NoHitEffect
+Archetype:
+  MutagenObjectType: MagicEffectArchetype
+  Type: Script
+CastType: FireAndForget

@@ -74,6 +74,7 @@ private:
     };
 
     bool IsValidTarget(RE::Actor* actor) const;
+    bool InitializeHiddenOutfitItems(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
     bool SetActorDefaultOutfit(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
     bool SetActorSleepOutfit(RE::Actor* actor, RE::BGSOutfit* outfit) const;
     static bool GetOutfitChangeFlag(RE::TESNPC* npc, std::uint32_t flag);

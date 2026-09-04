@@ -128,6 +128,59 @@ bool OutfitManager::IsValidTarget(RE::Actor* actor) const
 
 // --- Dynamic Outfit Forms ---
 
+bool OutfitManager::InitializeHiddenOutfitItems(
+    RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const
+{
+    if (!actor || !outfit) return false;
+
+    auto* inventory = actor->GetInventoryChanges();
+    if (!inventory) return false;
+
+    inventory->InitOutfitItems(outfit, actor->GetLevel());
+
+    const auto outfitFormId = outfit->GetFormID();
+    std::size_t taggedItems = 0;
+    std::size_t equippedItems = 0;
+    auto* equipManager = RE::ActorEquipManager::GetSingleton();
+
+    if (inventory->entryList) {
+        for (auto* entryData : *inventory->entryList) {
+            if (!entryData || !entryData->object || !entryData->extraLists) continue;
+
+            for (auto* extraList : *entryData->extraLists) {
+                auto* outfitItem = extraList ? extraList->GetByType<RE::ExtraOutfitItem>() : nullptr;
+                if (!outfitItem || outfitItem->id != outfitFormId) continue;
+
+                ++taggedItems;
+                if (!actor->IsDisabled() && equipManager) {
+                    equipManager->EquipObject(
+                        actor, entryData->object, extraList, 1, nullptr, update3D, false, false, false);
+                    ++equippedItems;
+                }
+            }
+        }
+    }
+
+    const auto expectedItems = static_cast<std::size_t>(outfit->outfitItems.size());
+    if (taggedItems != expectedItems) {
+        logger::warn(
+            "OutfitManager: initialized {}/{} hidden outfit items for {} (outfit {:08X})",
+            taggedItems,
+            expectedItems,
+            actor->GetDisplayFullName(),
+            outfitFormId);
+        return false;
+    }
+
+    logger::info(
+        "OutfitManager: initialized {}/{} hidden outfit items for {} ({} equipped)",
+        taggedItems,
+        expectedItems,
+        actor->GetDisplayFullName(),
+        equippedItems);
+    return true;
+}
+
 bool OutfitManager::SetActorDefaultOutfit(
     RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const
 {
@@ -135,22 +188,22 @@ bool OutfitManager::SetActorDefaultOutfit(
 
     auto* npc = actor->GetActorBase();
     if (!npc) return false;
-    if (npc->defaultOutfit == outfit) return true;
 
-    if (outfit) {
-        if (!actor->SetDefaultOutfit(outfit, update3D)) {
-            return false;
-        }
-    } else {
-        actor->RemoveOutfitItems(npc->defaultOutfit);
-        npc->SetDefaultOutfit(nullptr);
-        actor->InitInventoryIfRequired();
-    }
+    actor->InitInventoryIfRequired();
+
+    // Remove every engine-marked outfit instance, including entries left by a
+    // temporary outfit form from an earlier process. Ordinary inventory items
+    // have no ExtraOutfitItem marker and are not affected.
+    actor->RemoveOutfitItems(nullptr);
+    npc->SetDefaultOutfit(outfit);
+
+    const bool hiddenInventoryReady =
+        !outfit || InitializeHiddenOutfitItems(actor, outfit, update3D);
 
     // Runtime outfit forms use temporary FF FormIDs. Tailor persists their
     // source records itself, so the transient pointer must not enter the save.
     npc->RemoveChange(RE::TESNPC::ChangeFlags::kDefaultOutfit);
-    return npc->defaultOutfit == outfit;
+    return hiddenInventoryReady && npc->defaultOutfit == outfit;
 }
 
 bool OutfitManager::SetActorSleepOutfit(RE::Actor* actor, RE::BGSOutfit* outfit) const

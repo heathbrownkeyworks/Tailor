@@ -74,15 +74,8 @@ private:
     };
 
     bool IsValidTarget(RE::Actor* actor) const;
-    // Take off only what the transition actually requires: pieces of the outfit
-    // being replaced, plus anything occupying a biped slot the incoming outfit
-    // needs. Worn armor that is neither is left alone — it belongs to another
-    // system, not to Tailor.
-    void UnequipWornArmorNotInOutfit(RE::Actor* actor,
-                                     RE::BGSOutfit* incomingOutfit,
-                                     RE::BGSOutfit* outgoingOutfit) const;
-    bool SetDefaultOutfitPreservingInventory(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
-    bool SetSleepOutfitPreservingInventory(RE::Actor* actor, RE::BGSOutfit* outfit) const;
+    bool SetActorDefaultOutfit(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
+    bool SetActorSleepOutfit(RE::Actor* actor, RE::BGSOutfit* outfit) const;
     static bool GetOutfitChangeFlag(RE::TESNPC* npc, std::uint32_t flag);
     static void SuppressOutfitChangeFlags(RE::TESNPC* npc);
     static void RestoreOutfitChangeFlags(RE::TESNPC* npc, bool defaultHadChange, bool sleepHadChange);

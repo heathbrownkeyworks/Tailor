@@ -6,8 +6,6 @@
 #include "compat/OBodyCompat.h"
 #include "wig/WigManager.h"
 
-#include <unordered_set>
-
 OutfitManager& OutfitManager::GetSingleton()
 {
     static OutfitManager singleton;
@@ -130,75 +128,7 @@ bool OutfitManager::IsValidTarget(RE::Actor* actor) const
 
 // --- Dynamic Outfit Forms ---
 
-void OutfitManager::UnequipWornArmorNotInOutfit(RE::Actor* actor,
-                                                RE::BGSOutfit* incomingOutfit,
-                                                RE::BGSOutfit* outgoingOutfit) const
-{
-    if (!actor) return;
-
-    auto* equipManager = RE::ActorEquipManager::GetSingleton();
-    if (!equipManager) return;
-
-    // Items in the incoming outfit stay on; its slots are what we need to free.
-    std::unordered_set<RE::TESBoundObject*> incomingArmor;
-    std::uint32_t incomingSlots = 0;
-    if (incomingOutfit) {
-        for (auto* form : incomingOutfit->outfitItems) {
-            if (auto* armor = form ? form->As<RE::TESObjectARMO>() : nullptr) {
-                incomingArmor.insert(armor);
-                incomingSlots |= armor->GetSlotMask().underlying();
-            }
-        }
-    }
-
-    // Pieces of the outfit we are replacing — ours to take off.
-    std::unordered_set<RE::TESBoundObject*> outgoingArmor;
-    if (outgoingOutfit) {
-        for (auto* form : outgoingOutfit->outfitItems) {
-            if (auto* armor = form ? form->As<RE::TESObjectARMO>() : nullptr) {
-                outgoingArmor.insert(armor);
-            }
-        }
-    }
-
-    std::vector<RE::TESBoundObject*> wornArmor;
-    for (auto& [object, data] : actor->GetInventory([](RE::TESBoundObject& item) {
-             return item.IsArmor();
-         })) {
-        auto& [count, entry] = data;
-        if (!object || count <= 0 || !entry || !entry->IsWorn()) {
-            continue;
-        }
-        if (incomingArmor.contains(object)) {
-            continue;  // staying on
-        }
-
-        // Anything else is only fair game if it is a piece of the outfit being
-        // replaced, or if it occupies a slot the incoming outfit needs.
-        //
-        // Do NOT sweep every worn item: SMP/physics config objects (CBBE 3BBB's
-        // "SMP ON" object and friends) are meshless armor worn in otherwise
-        // unused slots, and unequipping them silently kills body physics while
-        // leaving them sitting in the inventory looking fine.
-        bool ours = outgoingArmor.contains(object);
-        bool conflicts = false;
-        if (auto* armor = object->As<RE::TESObjectARMO>()) {
-            conflicts = (armor->GetSlotMask().underlying() & incomingSlots) != 0;
-        }
-
-        if (ours || conflicts) {
-            wornArmor.push_back(object);
-        }
-    }
-
-    for (auto* armor : wornArmor) {
-        // Unequip synchronously and silently. Unlike Actor::SetDefaultOutfit,
-        // this leaves the exact inventory instance (including extra data) intact.
-        equipManager->UnequipObject(actor, armor, nullptr, 1, nullptr, false, false, false, true);
-    }
-}
-
-bool OutfitManager::SetDefaultOutfitPreservingInventory(
+bool OutfitManager::SetActorDefaultOutfit(
     RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const
 {
     if (!actor) return false;
@@ -207,22 +137,23 @@ bool OutfitManager::SetDefaultOutfitPreservingInventory(
     if (!npc) return false;
     if (npc->defaultOutfit == outfit) return true;
 
-    // CommonLib's Actor::SetDefaultOutfit calls RemoveOutfitItems on the
-    // outgoing outfit. That can destroy an NPC's own copy of the same armor.
-    // Unequip outgoing pieces instead, then update the base record directly.
-    // npc->defaultOutfit is still the outgoing outfit here — it is replaced on
-    // the next line.
-    UnequipWornArmorNotInOutfit(actor, outfit, npc->defaultOutfit);
-    npc->defaultOutfit = outfit;
-    actor->InitInventoryIfRequired();
-
-    if (outfit && !actor->IsDisabled()) {
-        actor->AddWornOutfit(outfit, update3D);
+    if (outfit) {
+        if (!actor->SetDefaultOutfit(outfit, update3D)) {
+            return false;
+        }
+    } else {
+        actor->RemoveOutfitItems(npc->defaultOutfit);
+        npc->SetDefaultOutfit(nullptr);
+        actor->InitInventoryIfRequired();
     }
-    return true;
+
+    // Runtime outfit forms use temporary FF FormIDs. Tailor persists their
+    // source records itself, so the transient pointer must not enter the save.
+    npc->RemoveChange(RE::TESNPC::ChangeFlags::kDefaultOutfit);
+    return npc->defaultOutfit == outfit;
 }
 
-bool OutfitManager::SetSleepOutfitPreservingInventory(RE::Actor* actor, RE::BGSOutfit* outfit) const
+bool OutfitManager::SetActorSleepOutfit(RE::Actor* actor, RE::BGSOutfit* outfit) const
 {
     if (!actor) return false;
 
@@ -230,10 +161,9 @@ bool OutfitManager::SetSleepOutfitPreservingInventory(RE::Actor* actor, RE::BGSO
     if (!npc) return false;
     if (npc->sleepOutfit == outfit) return true;
 
-    // Tailor persists assignments itself. Do not mark a runtime FFxxxxxx outfit
-    // as an NPC base-record change; that pointer is not stable across processes.
-    npc->sleepOutfit = outfit;
-    return true;
+    npc->SetSleepOutfit(outfit);
+    npc->RemoveChange(RE::TESNPC::ChangeFlags::kSleepOutfit);
+    return npc->sleepOutfit == outfit;
 }
 
 bool OutfitManager::GetOutfitChangeFlag(RE::TESNPC* npc, std::uint32_t flag)
@@ -411,10 +341,10 @@ void OutfitManager::EndCreateOutfit(RE::Actor* actor)
     auto actorPtr = _createSessionActor.get();
     if (actorPtr) {
         auto* sessionActor = actorPtr.get();
-        SetDefaultOutfitPreservingInventory(sessionActor, _preCreateOutfit, true);
+        SetActorDefaultOutfit(sessionActor, _preCreateOutfit, true);
 
         // Restore the exact captured SOFT, including a real null.
-        SetSleepOutfitPreservingInventory(sessionActor, _preCreateSleepOutfit);
+        SetActorSleepOutfit(sessionActor, _preCreateSleepOutfit);
         RestoreOutfitChangeFlags(
             sessionActor->GetActorBase(),
             _preCreateDefaultHadChange,
@@ -526,17 +456,17 @@ bool OutfitManager::FlushAndApplyOutfit(RE::Actor* actor, OutfitPair& pair)
     if (!OBodyCompat::GetSingleton().IsInstalled()) {
         InitFlushOutfit();
         if (_flushOutfit && _flushOutfit != incoming) {
-            SetDefaultOutfitPreservingInventory(actor, _flushOutfit, true);
+            SetActorDefaultOutfit(actor, _flushOutfit, true);
         }
     }
 
-    if (!SetDefaultOutfitPreservingInventory(actor, incoming, true)) {
+    if (!SetActorDefaultOutfit(actor, incoming, true)) {
         return false;
     }
 
     // Also override the NPC's sleep outfit (SOFT) to prevent vanilla sleep
     // outfits (e.g. Belted Tunic) from overriding equipped body-slot items.
-    SetSleepOutfitPreservingInventory(actor, incoming);
+    SetActorSleepOutfit(actor, incoming);
     std::swap(pair.primary, pair.alternate);
     return true;
 }
@@ -816,14 +746,14 @@ bool OutfitManager::RestoreCycleSnapshot(RE::Actor* actor)
         }
     } else {
         // A captured null is a real state, not a missing sentinel.
-        defaultRestored = SetDefaultOutfitPreservingInventory(actor, _preCycleOutfit, true);
+        defaultRestored = SetActorDefaultOutfit(actor, _preCycleOutfit, true);
     }
 
     bool sleepRestored = false;
     if (_preCycleSleepWasActorPair && restoredDefault) {
-        sleepRestored = SetSleepOutfitPreservingInventory(actor, restoredDefault);
+        sleepRestored = SetActorSleepOutfit(actor, restoredDefault);
     } else {
-        sleepRestored = SetSleepOutfitPreservingInventory(actor, _preCycleSleepOutfit);
+        sleepRestored = SetActorSleepOutfit(actor, _preCycleSleepOutfit);
     }
 
     RestoreOutfitChangeFlags(
@@ -935,8 +865,8 @@ bool OutfitManager::ResetOutfit(RE::Actor* actor)
         }
 
         restored =
-            SetDefaultOutfitPreservingInventory(actor, originalOutfit, true) &&
-            SetSleepOutfitPreservingInventory(actor, originalSleepOutfit);
+            SetActorDefaultOutfit(actor, originalOutfit, true) &&
+            SetActorSleepOutfit(actor, originalSleepOutfit);
         if (restored) {
             RestoreOutfitChangeFlags(
                 actor->GetActorBase(), defaultHadChange, sleepHadChange);

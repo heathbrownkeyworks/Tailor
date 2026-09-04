@@ -40,6 +40,63 @@ void OutfitManager::Initialize()
     logger::info("OutfitManager initialized");
 }
 
+void OutfitManager::CaptureDefaultOutfitsAtDataLoad()
+{
+    std::lock_guard lock(_mutex);
+
+    auto* dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+        logger::error("OutfitManager: cannot capture data-load outfit defaults without TESDataHandler");
+        return;
+    }
+
+    _dataLoadedDefaultOutfits.clear();
+    for (auto* npc : dataHandler->GetFormArray<RE::TESNPC>()) {
+        if (!npc) continue;
+        _dataLoadedDefaultOutfits.insert_or_assign(
+            npc->GetFormID(), DefaultOutfitState{ npc->defaultOutfit, npc->sleepOutfit });
+    }
+
+    auto& assignments = OutfitAssignments::GetSingleton();
+    std::size_t repaired = 0;
+    std::size_t unresolved = 0;
+    for (const auto& [actorId, assignment] : assignments.GetAll()) {
+        (void)assignment;
+
+        auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
+        DefaultOutfitState state;
+        if (!GetDataLoadedDefaultOutfitState(actor, state)) {
+            ++unresolved;
+            continue;
+        }
+
+        // kDataLoaded precedes save loading, so these are the winning plugin
+        // defaults and neither outfit change bit belongs to the save.
+        if (assignments.CaptureMissingOriginalOutfitState(
+                actorId,
+                state.defaultOutfit,
+                true,
+                state.sleepOutfit,
+                true,
+                true,
+                false,
+                true,
+                false)) {
+            ++repaired;
+        }
+    }
+
+    if (repaired > 0) {
+        assignments.Save();
+    }
+
+    logger::info(
+        "OutfitManager: captured {} data-load NPC outfit defaults; repaired {} assignment(s), {} unresolved",
+        _dataLoadedDefaultOutfits.size(),
+        repaired,
+        unresolved);
+}
+
 // --- Target Management ---
 
 void OutfitManager::UpdateTargetFromCrosshair()
@@ -250,6 +307,24 @@ void OutfitManager::RestoreOutfitChangeFlags(
     } else {
         npc->RemoveChange(RE::TESNPC::ChangeFlags::kSleepOutfit);
     }
+}
+
+bool OutfitManager::GetDataLoadedDefaultOutfitState(
+    RE::Actor* actor, DefaultOutfitState& state) const
+{
+    if (!actor) return false;
+
+    std::lock_guard lock(_mutex);
+    auto findState = [this, &state](RE::TESNPC* npc) {
+        if (!npc) return false;
+        const auto it = _dataLoadedDefaultOutfits.find(npc->GetFormID());
+        if (it == _dataLoadedDefaultOutfits.end()) return false;
+        state = it->second;
+        return true;
+    };
+
+    if (findState(actor->GetActorBase())) return true;
+    return findState(actor->GetTemplateBase());
 }
 
 void OutfitManager::CapturePersistedOutfitStateIfNeeded(RE::Actor* actor)
@@ -881,21 +956,15 @@ bool OutfitManager::ResetOutfit(RE::Actor* actor)
 
     auto& assignments = OutfitAssignments::GetSingleton();
     const auto actorId = actor->GetFormID();
+    const bool hadAssignment =
+        assignments.HasAssignment(actorId) || assignments.HasAnySituation(actorId);
     bool restored = false;
 
-    // A reset during cycling uses the exact transient snapshot, including a
-    // known-null original or a copied Tailor runtime outfit.
-    if (_preCycleStateCaptured) {
+    // An unassigned preview has no persisted baseline yet, so its exact
+    // transient snapshot is the default state. An already assigned actor must
+    // reset to the real original outfit, not the previous Tailor outfit.
+    if (_preCycleStateCaptured && !hadAssignment) {
         restored = RestoreCycleSnapshot(actor);
-        _preCycleOutfit = nullptr;
-        _preCycleSleepOutfit = nullptr;
-        _preCycleDefaultHadChange = false;
-        _preCycleSleepHadChange = false;
-        _preCycleStateCaptured = false;
-        _preCycleDefaultWasActorPair = false;
-        _preCycleSleepWasActorPair = false;
-        _preCycleOutfitItems.clear();
-        _cycleState.reset();
     } else {
         RE::BGSOutfit* originalOutfit = nullptr;
         RE::BGSOutfit* originalSleepOutfit = nullptr;
@@ -909,12 +978,53 @@ bool OutfitManager::ResetOutfit(RE::Actor* actor)
         const bool sleepChangeKnown =
             assignments.GetOriginalSleepChangeState(actorId, sleepHadChange);
 
-        if (!defaultKnown || !sleepKnown || !defaultChangeKnown || !sleepChangeKnown) {
+        bool resolvedDefault = defaultKnown;
+        bool resolvedSleep = sleepKnown;
+        bool resolvedDefaultChange = defaultChangeKnown;
+        bool resolvedSleepChange = sleepChangeKnown;
+
+        DefaultOutfitState dataLoadedState;
+        if ((!resolvedDefault || !resolvedSleep ||
+                !resolvedDefaultChange || !resolvedSleepChange) &&
+            GetDataLoadedDefaultOutfitState(actor, dataLoadedState)) {
+            if (!resolvedDefault) {
+                originalOutfit = dataLoadedState.defaultOutfit;
+                resolvedDefault = true;
+            }
+            if (!resolvedSleep) {
+                originalSleepOutfit = dataLoadedState.sleepOutfit;
+                resolvedSleep = true;
+            }
+            if (!resolvedDefaultChange) {
+                defaultHadChange = false;
+                resolvedDefaultChange = true;
+            }
+            if (!resolvedSleepChange) {
+                sleepHadChange = false;
+                resolvedSleepChange = true;
+            }
+            logger::info(
+                "ResetOutfit: using data-load default fallback for {}",
+                actor->GetDisplayFullName());
+        }
+
+        if (!resolvedDefault) {
             logger::warn(
-                "ResetOutfit: original DOFT/SOFT ownership is incomplete for {}; "
-                "leaving the assignment intact instead of guessing",
+                "ResetOutfit: no original or data-load default outfit is available for {}",
                 actor->GetDisplayFullName());
             return false;
+        }
+
+        // Missing SOFT metadata must never prevent the primary DOFT reset. If
+        // no plugin baseline exists, clearing SOFT removes Tailor's override.
+        if (!resolvedSleep) {
+            originalSleepOutfit = nullptr;
+        }
+        if (!resolvedDefaultChange) {
+            defaultHadChange = false;
+        }
+        if (!resolvedSleepChange) {
+            sleepHadChange = false;
         }
 
         restored =
@@ -932,6 +1042,16 @@ bool OutfitManager::ResetOutfit(RE::Actor* actor)
             actor->GetDisplayFullName());
         return false;
     }
+
+    _preCycleOutfit = nullptr;
+    _preCycleSleepOutfit = nullptr;
+    _preCycleDefaultHadChange = false;
+    _preCycleSleepHadChange = false;
+    _preCycleStateCaptured = false;
+    _preCycleDefaultWasActorPair = false;
+    _preCycleSleepWasActorPair = false;
+    _preCycleOutfitItems.clear();
+    _cycleState.reset();
 
     logger::info("Reset outfit for {} to captured original DOFT/SOFT state", actor->GetDisplayFullName());
     NotifyOutfitChanged(actor);

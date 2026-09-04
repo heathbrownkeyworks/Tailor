@@ -55,6 +55,7 @@ public:
     // Reset to vanilla outfit
     bool ResetOutfit(RE::Actor* actor);
 
+    void CaptureDefaultOutfitsAtDataLoad();
     void ReApplyAllAssignments();
     void PrepareForGameLoad();
 
@@ -73,6 +74,12 @@ private:
         std::vector<RE::TESForm*> desiredItems;
     };
 
+    struct DefaultOutfitState
+    {
+        RE::BGSOutfit* defaultOutfit = nullptr;
+        RE::BGSOutfit* sleepOutfit = nullptr;
+    };
+
     bool IsValidTarget(RE::Actor* actor) const;
     bool InitializeHiddenOutfitItems(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
     bool SetActorDefaultOutfit(RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const;
@@ -80,6 +87,7 @@ private:
     static bool GetOutfitChangeFlag(RE::TESNPC* npc, std::uint32_t flag);
     static void SuppressOutfitChangeFlags(RE::TESNPC* npc);
     static void RestoreOutfitChangeFlags(RE::TESNPC* npc, bool defaultHadChange, bool sleepHadChange);
+    bool GetDataLoadedDefaultOutfitState(RE::Actor* actor, DefaultOutfitState& state) const;
     void CapturePersistedOutfitStateIfNeeded(RE::Actor* actor);
     void InitFlushOutfit();
     bool InitOutfitPair(OutfitPair& pair);
@@ -101,6 +109,7 @@ private:
     // Tailor's control (an undress mod redressing, ResetInventory) then dresses them
     // in whoever was dressed last.
     std::unordered_map<RE::FormID, OutfitPair> _actorOutfits;
+    std::unordered_map<RE::FormID, DefaultOutfitState> _dataLoadedDefaultOutfits;
 
     RE::BGSOutfit*  _flushOutfit = nullptr;
     RE::BGSOutfit*  _preCreateOutfit = nullptr;

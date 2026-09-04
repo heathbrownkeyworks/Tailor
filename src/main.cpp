@@ -53,6 +53,7 @@ static void OnDataLoaded()
     OutfitStore::GetSingleton().Load();
     OutfitLibrary::GetSingleton().Load();
     OutfitAssignments::GetSingleton().Load();
+    OutfitManager::GetSingleton().CaptureDefaultOutfitsAtDataLoad();
 
     // Wig systems
     WigManager::GetSingleton().Initialize();

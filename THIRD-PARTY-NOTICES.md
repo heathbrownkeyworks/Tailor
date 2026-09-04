@@ -1,6 +1,8 @@
 # Third-party notices
 
-Tailor is licensed under GPL-3.0. The complete license text is in `LICENSE`.
+Tailor's original work is licensed under the MIT License. The complete license
+text is in `LICENSE`. Third-party material retains its applicable upstream
+license as described below.
 
 ## Menu Studio-derived preview-backdrop material
 
@@ -15,6 +17,8 @@ maartenharms and contributors:
 Source: <https://github.com/maartenharms/menu-studio> at commit
 `fa70b79e67d1331916d2cec9b41f514d060c9920` (Menu Studio 0.7.2).
 Menu Studio is distributed under GPL-3.0.
+The complete GPL-3.0 license text for this material is in
+`LICENSES/Menu-Studio-GPL-3.0.txt`.
 
 The plane's four-vertex, two-triangle geometry is original Tailor geometry.
 Its opaque, self-emissive lighting material and flat diffuse/normal textures

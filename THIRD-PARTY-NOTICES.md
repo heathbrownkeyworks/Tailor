@@ -10,6 +10,7 @@ The following Tailor preview assets are adapted from Menu Studio by
 maartenharms and contributors:
 
 - `assets/meshes/Tailor/Preview/tailor_background_plane.nif`
+- `assets/meshes/Tailor/Preview/tailor_brown_plane.nif`
 - `assets/textures/Tailor/Preview/stage_white.dds`
 - `assets/textures/Tailor/Preview/void_d.dds`
 - `assets/textures/Tailor/Preview/void_n.dds`
@@ -25,35 +26,20 @@ Its opaque, self-emissive lighting material and flat diffuse/normal textures
 are adapted from Menu Studio's `voidshell.nif`; the texture paths are renamed
 for Tailor. The emissive material uses `#2a2118` as Skyrim/ENB compensation
 for Tailor's intended warm-obsidian stage color.
-Tailor clones the plane as a camera-facing wall and floor without modifying
-shared material state at runtime. No Menu Studio runtime code is included in
-the backdrop-loading path.
+The active brown plane has a plain `NiNode` root and is used as a camera-facing
+wall, without a floor platform. Tailor preserves its engine-initialized shader
+property and required fade-node link.
 
-## Menu Studio-derived AE-safe isolation paths
+## Menu Studio-informed live scene isolation
 
-`src/preview/TailorPreviewSession.cpp` adapts Menu Studio's safe loaded-cell
-reference enumeration strategy from `src/Declutter.cpp` at the same commit.
-The Tailor implementation collects reference handles while CommonLib holds a
-cell's reference lock, performs scene-graph changes only after that lock is
-released, and deliberately omits CommonLib's final sky-cell access on exterior
-AE runtimes. Tailor uses this only for a bounded, reversible preview-isolation
-bubble; Menu Studio's broader declutter, lighting, imagespace, weather, and
-world-feeder mutations are not included.
-
-Tailor also follows Menu Studio's render-only terrain isolation pattern from
-the same `Declutter.cpp`: for each relevant attached exterior cell, it claims
-only that LAND record's four loaded quadrant mesh roots, plus a standalone
-geometry fallback when a quadrant has no mesh root or its geometry is not a
-descendant. Tailor retains strong node references, changes only the transient
-AppCull bit, leaves terrain collision and records untouched, and restores the
-exact nodes during the preview session's existing ownership-aware teardown.
-
-Tailor also adopts Menu Studio's field-tested distinction between placed light
-art and renderer illumination. It includes validated `LIGH` reference roots in
-the reversible isolation bubble to hide candle/flame/smoke artwork, but does
-not self-cull their separately gathered `NiLight` emitters or copy Menu
-Studio's broader cell-light/studio-rig behavior. This preserves the existing
-follower illumination until Tailor owns a dedicated light rig.
+`src/preview/PreviewScene.cpp` adapts the recursive visibility/restore strategy,
+world-feeder coverage, exact player skeleton ownership, always-draw flags and
+dynamic light setup from Menu Studio by maartenharms and contributors, GPL-3.0,
+commit `8b64be319916223f7bc42700a48ec01ce190b9aa` (`src/Declutter.cpp` and
+`src/StudioRig.cpp`). This adapted material retains GPL-3.0; the complete text
+is in `LICENSES/Menu-Studio-GPL-3.0.txt`. Tailor supplies its own lifecycle and
+guarded free camera. It does not modify cell records or the portal graph,
+clone an NPC, or require Menu Studio at runtime.
 
 ## SmoothCam public API declarations
 

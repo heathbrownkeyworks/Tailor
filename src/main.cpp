@@ -63,6 +63,7 @@ static void OnDataLoaded()
     CustomColorLibrary::GetSingleton().Load();
 
     CellHandler::Register();
+    Tailor::Preview::TailorPreviewSession::GetSingleton().RegisterEvents();
     PowerHandler::Register();
     SituationHandler::GetSingleton()->Initialize();
     SituationHandler::Register();

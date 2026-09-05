@@ -4,13 +4,22 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.3.6**
+Current source version: **2.3.7**
+
+## Changes in 2.3.7
+
+- Show the existing NPC alone against a stable dark backdrop.
+- Keep the preview facing forward when switching between outfit and wig screens.
+- Zoom closer for wigs and hair colors, returning to full-body framing for outfits.
+- Hide the game HUD and hold the NPC still while Tailor is open, restoring the
+  previous states when Tailor closes.
 
 ## Features
 
 - Create and organize outfit categories for female and male NPCs.
 - Build outfits from armor records already loaded in the game.
 - Preview outfits and wigs on the selected NPC before saving an assignment.
+- Inspect hair in a closer preview that uses the NPC's existing in-game appearance.
 - Keep assigned outfit items in Skyrim's hidden outfit inventory instead of
   the NPC's normal trade inventory.
 - Restore the NPC's plugin-defined default outfit with Reset Outfit, including
@@ -33,6 +42,10 @@ Current source version: **2.3.6**
 
 OBody NG and SmoothCam are optional integrations. Tailor continues without
 them.
+
+The isolated live NPC preview is available on SE/AE; it is disabled on VR.
+The updated preview was confirmed in the author's AE setup. Other runtimes and
+renderer configurations need separate testing.
 
 ## Building
 

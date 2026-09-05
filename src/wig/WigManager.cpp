@@ -1,5 +1,6 @@
 #include "wig/WigManager.h"
 #include "events/SituationHandler.h"
+#include "preview/TailorPreviewSession.h"
 
 namespace
 {
@@ -183,6 +184,7 @@ void WigManager::RemoveCurrentWig(RE::Actor* actor)
     if (equipManager) {
         equipManager->UnequipObject(actor, armor);
     }
+    Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
 
     // Take back the copy Tailor added; a copy the user gave the NPC stays put.
     if (state->itemAdded && GetActorItemCount(actor, armor) > 0) {
@@ -243,6 +245,7 @@ bool WigManager::EquipWig(RE::Actor* actor, const WigEntry& wig)
 
     bool itemAdded = addedNow || (oldArmor == armor && existingState && existingState->itemAdded);
     assignments.SetAssignment(actor->GetFormID(), wig, itemAdded);
+    Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
     logger::info("Assigned wig '{}' to actor 0x{:08X}{}", wig.name, actor->GetFormID(),
         IsNFFManaged(actor) ? " (NFF managed — wig may be lost on NFF outfit change)" : "");
 
@@ -939,6 +942,7 @@ void WigManager::RetintActorHair(RE::Actor* actor)
         });
 
     if (retinted > 0) {
+        Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
         auto state = WigAssignments::GetSingleton().GetState(actor->GetFormID());
         const bool custom = state && state->HasHairColor();
         logger::info("RetintActorHair: {} — {} hair material(s) retinted ({})",

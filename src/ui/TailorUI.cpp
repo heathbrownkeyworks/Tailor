@@ -1244,15 +1244,11 @@ void TailorUI::Initialize()
                     json.value("x", 0.0f),
                     json.value("y", 0.0f),
                     json.value("width", 0.0f),
-                    json.value("height", 0.0f)
+                    json.value("height", 0.0f),
+                    json.value("hairMode", false)
                 };
                 auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
-                if (preview.IsActive()) {
-                    preview.SetViewport(viewport);
-                } else if (auto* target = OutfitManager::GetSingleton().GetTarget()) {
-                    preview.Begin(target->GetHandle(), viewport);
-                }
-                ui.SendPreviewState();
+                preview.SetViewport(viewport);
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorPreviewViewport: {}", e.what());
             }
@@ -1312,8 +1308,8 @@ void TailorUI::Open()
     ++_hideGeneration;
 
     g_MeridianView->Show(_view);
-    // Unpaused: the game world keeps ticking while the preview session softly
-    // holds the target. Meridian's FocusMenu supplies the cursor and captures input.
+    // The live preview session owns the target's hold. The world stays unpaused
+    // so outfit/morph updates can settle inside bounded refresh windows.
     const auto focusResult = g_MeridianView->TryFocus(
         _view, Meridian::UI::View::FocusMode::Unpaused);
     if (focusResult != Meridian::UI::View::FocusResult::Granted &&
@@ -1327,10 +1323,13 @@ void TailorUI::Open()
     }
 
     _isOpen = true;
+    _gameMenus.Hide(RE::UI::GetSingleton());
+    if (target) Tailor::Preview::TailorPreviewSession::GetSingleton().Begin(target->GetHandle());
     const auto previewOpenGeneration = ++_previewOpenGeneration;
     g_MeridianView->ExecuteJavaScript(_view, std::format(
         "tailorSetPreviewOpenGeneration({})", previewOpenGeneration).c_str());
     g_MeridianView->ExecuteJavaScript(_view, "tailorShowPanel()");
+    SendPreviewState();
 }
 
 void TailorUI::Close()
@@ -1342,6 +1341,8 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
 {
     const bool wasOpen = _isOpen.exchange(false);
     ++_previewOpenGeneration;
+    // Restore even on repeated/lifecycle cleanup and without a Meridian view.
+    _gameMenus.Restore(RE::UI::GetSingleton());
     if (!wasOpen) {
         Tailor::Preview::TailorPreviewSession::GetSingleton().End(reason);
         return;
@@ -1412,7 +1413,8 @@ void TailorUI::SendPreviewState()
     if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
     auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
     nlohmann::json state{
-        {"active", preview.IsActive()},
+        {"active", preview.IsReady()},
+        {"message", preview.StatusMessage()},
         {"generation", preview.Generation()}
     };
     g_MeridianView->ExecuteJavaScript(

@@ -134,9 +134,8 @@
   --work-width: 840px;
   --items-width: 540px;
 
-  /* Flat fallback while automatic live-world framing is unavailable. The
-     active stage is transparent so Skyrim's environment remains visible. */
-  --stage-bg: #14100b;
+  /* Opaque fallback; the native NPC snapshot also has an opaque black clear. */
+  --stage-bg: var(--surface-raised);
 }
 
 body[data-density="compact"]    { --density-pad: 10px; --density-row: 10px; --density-gap: 10px; }
@@ -611,14 +610,12 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
   background: rgba(10, 8, 7, 0.30);
 }
 
-/* Center stage: opaque fallback until the native preview activates, then
-   transparent so the live actor and normal Skyrim environment show through. */
+/* The transparent aperture reveals only the live Skyrim scene. */
 .court-stage {
   flex: 1;
   min-width: 220px;
   position: relative;
   background: var(--stage-bg);
-  transition: background-color 160ms var(--ease-in-out);
 }
 .court.preview-active .court-stage { background: transparent; }
 #npcStage {
@@ -2475,7 +2472,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         </svg>
         <div class="hint-text">No one in the court.<br>Look at an NPC, then reopen this menu.</div>
       </div>
-      <div id="npcStageStatus" class="stage-preview-status">Preview unavailable in this camera or location.</div>
+      <div id="npcStageStatus" class="stage-preview-status">Preparing NPC preview...</div>
     </div>
   </div>
 
@@ -2517,7 +2514,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-     <span class="footer-ver">v2.3.4</span>
+     <span class="footer-ver">v2.3.7</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -2686,8 +2683,7 @@ function syncRail() {
 
   // The work column opens on the side its domain belongs to: outfit screens
   // approach the NPC from the LEFT, wig screens from the RIGHT.
-  var wigSide = (_wigCurrentScreen !== '') ||
-                (_currentScreen === 'main' && _activeTab === 'wigs');
+  var wigSide = isWigPreview();
   var sizer = document.querySelector('.page-host-sizer');
   var leftHost = document.getElementById('courtLeftHost');
   var rightHost = document.getElementById('courtRightHost');
@@ -2989,20 +2985,28 @@ function tailorShowPanel() {
 function tailorHidePanel() {
   // C++ invokes this before hiding the view — play the fade-out.
   clearToast();
+  _previewOpenGeneration = 0;
+  _previewViewportTimers.forEach(clearTimeout);
+  _previewViewportTimers = [];
+  if (_previewViewportFrame) cancelAnimationFrame(_previewViewportFrame);
+  _previewViewportFrame = 0;
   tailorSetPreviewState({active:false, generation:0});
   dockClose();
 }
 
 // ============================================================
-//  Live NPC stage — automatic viewport geometry
+//  Live NPC preview — automatic viewport geometry
 // ============================================================
 var _previewOpenGeneration = 0;
 var _previewActive = false;
 var _previewViewportFrame = 0;
 var _previewViewportTimers = [];
+var _previewViewportKey = '';
+var _previewTransitionUntil = 0;
 
 function tailorSetPreviewOpenGeneration(generation) {
   _previewOpenGeneration = Number(generation) || 0;
+  _previewViewportKey = '';
 }
 
 function tailorSetPreviewState(data) {
@@ -3011,8 +3015,15 @@ function tailorSetPreviewState(data) {
   var stage = document.getElementById('dock');
   var status = document.getElementById('npcStageStatus');
   if (stage) stage.classList.toggle('preview-active', _previewActive);
-  if (status) status.classList.toggle('on', !_previewActive && !!_targetName);
-  if (_previewActive) queuePreviewViewportReport();
+  if (status) {
+    status.textContent = data.message || 'NPC preview unavailable.';
+    status.classList.toggle('on', !_previewActive && !!_targetName);
+  }
+}
+
+function isWigPreview() {
+  return (_wigCurrentScreen !== '') ||
+         (_currentScreen === 'main' && _activeTab === 'wigs');
 }
 
 function reportPreviewViewport() {
@@ -3020,11 +3031,21 @@ function reportPreviewViewport() {
   if (!viewport || !_previewOpenGeneration || !window.tailorPreviewViewport) return;
   var rect = viewport.getBoundingClientRect();
   if (!rect.width || !rect.height || !window.innerWidth || !window.innerHeight) return;
+  var left = Math.max(0, Math.round(rect.left));
+  var top = Math.max(0, Math.round(rect.top));
+  var right = Math.min(window.innerWidth, Math.round(rect.right));
+  var bottom = Math.min(window.innerHeight, Math.round(rect.bottom));
+  if (right <= left || bottom <= top) return;
+  var hairMode = isWigPreview();
+  var key = [_previewOpenGeneration, hairMode, left, top, right, bottom, window.innerWidth, window.innerHeight].join(':');
+  if (key === _previewViewportKey) return;
+  _previewViewportKey = key;
   window.tailorPreviewViewport(JSON.stringify({
-    x: rect.left / window.innerWidth,
-    y: rect.top / window.innerHeight,
-    width: rect.width / window.innerWidth,
-    height: rect.height / window.innerHeight,
+    x: left / window.innerWidth,
+    y: top / window.innerHeight,
+    width: (right - left) / window.innerWidth,
+    height: (bottom - top) / window.innerHeight,
+    hairMode: hairMode,
     openGeneration: _previewOpenGeneration
   }));
 }
@@ -3034,10 +3055,12 @@ function queuePreviewViewportReport() {
   _previewViewportFrame = requestAnimationFrame(function() {
     _previewViewportFrame = 0;
     reportPreviewViewport();
+    if (_previewOpenGeneration && performance.now() < _previewTransitionUntil) queuePreviewViewportReport();
   });
 }
 
 function schedulePreviewViewportReport() {
+  _previewTransitionUntil = performance.now() + 420;
   queuePreviewViewportReport();
   _previewViewportTimers.forEach(clearTimeout);
   _previewViewportTimers = [90, 190, 310, 380].map(function(delay) {
@@ -6443,15 +6466,16 @@ function updateDeleteButtonState() {
     var noanim = document.createElement('style');
     noanim.textContent = '.panel.active, .panel.active * { animation: none !important; }';
     document.head.appendChild(noanim);
-    // Preview-only: outline the live NPC viewport so layout work can see it.
-    // In production the region is transparent to Skyrim's live environment.
+    // Preview-only: stand in for the live Skyrim scene.
+    // The browser preview cannot render a Skyrim actor.
     var npcStage = document.getElementById('npcStage');
     if (npcStage) {
+      npcStage.style.background = '#000';
       var marker = document.createElement('div');
       marker.style.cssText = 'position:absolute; inset:12px; border:1px dashed rgba(245,158,11,0.25); border-radius:12px; pointer-events:none;';
       var tag = document.createElement('div');
       tag.style.cssText = 'position:absolute; top:8px; left:12px; font-size:9px; font-weight:600; letter-spacing:0.22em; text-transform:uppercase; color:rgba(245,158,11,0.45);';
-      tag.textContent = 'NPC render region';
+      tag.textContent = 'Live NPC region (browser layout test)';
       marker.appendChild(tag);
       npcStage.appendChild(marker);
     }

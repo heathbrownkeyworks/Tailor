@@ -3,6 +3,7 @@
 #include "MeridianUIAPI/ViewAPI.h"
 #include "outfit/OutfitManager.h"
 #include "preview/TailorPreviewSession.h"
+#include "ui/GameMenuVisibility.h"
 
 #include <atomic>
 #include <filesystem>
@@ -76,6 +77,7 @@ private:
     // scheduled by an earlier Close() can detect a reopen and cancel itself.
     std::atomic<std::uint32_t> _hideGeneration{0};
     std::atomic<std::uint64_t> _previewOpenGeneration{0};
+    Tailor::GameMenuVisibility _gameMenus;
     std::set<std::string> _blacklist;     // outfit blacklist
     std::set<std::string> _wigBlacklist;  // wig blacklist
 };

@@ -5,6 +5,7 @@
 #include "Settings.h"
 #include "compat/OBodyCompat.h"
 #include "wig/WigManager.h"
+#include "preview/TailorPreviewSession.h"
 
 OutfitManager& OutfitManager::GetSingleton()
 {
@@ -15,6 +16,7 @@ OutfitManager& OutfitManager::GetSingleton()
 void OutfitManager::NotifyOutfitChanged(RE::Actor* actor)
 {
     if (!actor) return;
+    Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
     WigManager::GetSingleton().ReEquipWigAfterOutfitChange(actor);
 
     // OBody owns its morph and ORefit state through armor equip events. Do not

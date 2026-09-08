@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <optional>
 #include <set>
 
 class TailorUI
@@ -78,6 +79,7 @@ private:
     std::atomic<std::uint32_t> _hideGeneration{0};
     std::atomic<std::uint64_t> _previewOpenGeneration{0};
     Tailor::GameMenuVisibility _gameMenus;
+    std::optional<float> _originalTimeScale;
     std::set<std::string> _blacklist;     // outfit blacklist
     std::set<std::string> _wigBlacklist;  // wig blacklist
 };

@@ -1,13 +1,16 @@
 #pragma once
 
 #include <filesystem>
+#include <initializer_list>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 enum class OutfitSituation : int { Adventuring = 1, Town = 2, Home = 3, Sleep = 4 };
 
 struct SituationalAssignment {
-    int outfitId = 0;       // legacy single-outfit (0 = not set)
+    int outfitId = 0;       // generic outfit, retained as the final situation fallback (0 = not set)
     int adventuringId = 0;  // dungeon/wilderness
     int townId = 0;         // city/settlement/inn
     int homeId = 0;         // player house
@@ -36,6 +39,18 @@ struct SituationalAssignment {
     bool HasAnySituation() const {
         return adventuringId > 0 || townId > 0 || homeId > 0 || sleepId > 0
             || adventuringRandom || townRandom || homeRandom || sleepRandom;
+    }
+
+    template <class RandomResolver>
+    int ResolveOutfit(OutfitSituation situation, RandomResolver&& resolveRandom) const {
+        auto resolveSlot = [&](OutfitSituation slot) {
+            return GetRandomFlag(slot) ? resolveRandom(slot) : GetSlot(slot);
+        };
+        int selected = resolveSlot(situation);
+        if (selected <= 0 && situation != OutfitSituation::Adventuring) {
+            selected = resolveSlot(OutfitSituation::Adventuring);
+        }
+        return selected > 0 ? selected : outfitId;
     }
 
     int GetSlot(OutfitSituation s) const {
@@ -78,6 +93,13 @@ struct SituationalAssignment {
         case OutfitSituation::Town:        townRandom = val; break;
         case OutfitSituation::Home:        homeRandom = val; break;
         case OutfitSituation::Sleep:       sleepRandom = val; break;
+        }
+    }
+
+    void ClearSituations() {
+        for (auto situation : {OutfitSituation::Adventuring, OutfitSituation::Town,
+                 OutfitSituation::Home, OutfitSituation::Sleep}) {
+            ClearSlot(situation);
         }
     }
 

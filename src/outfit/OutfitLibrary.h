@@ -14,17 +14,20 @@ public:
     void Save() const;
 
     const std::vector<OutfitCategory>& GetCategories() const;
-    std::vector<OutfitCategory> GetCategoriesForSex(const std::string& sex) const;
+    std::string GetCategoryDisplayName(int id) const;
     const OutfitCategory* GetCategoryById(int id) const;
-    // Situation pool lookup — `sex` must be "female" or "male". v2.0+ situation pools are sex-specific.
-    const OutfitCategory* GetCategoryBySituationType(const std::string& sitType, const std::string& sex) const;
+    // Combine legacy and new pools, with each outfit ID represented once.
+    std::vector<int> GetSituationOutfitIds(const std::string& sitType) const;
 
-    int  AddCategory(const std::string& name, const std::string& sex);
+    int  AddCategory(const std::string& name);
     bool RenameCategory(int id, const std::string& newName);
     bool DeleteCategory(int id);
 
     bool AddOutfitToCategory(int categoryId, int outfitId);
     bool RemoveOutfitFromCategory(int categoryId, int outfitId);
+
+    // Caller validates category IDs before saving. Retained memberships keep their order.
+    void SetOutfitCategories(int outfitId, const std::vector<int>& categoryIds);
 
     // Remove an outfit ID from ALL categories (used when deleting an outfit)
     void RemoveOutfitFromAllCategories(int outfitId);

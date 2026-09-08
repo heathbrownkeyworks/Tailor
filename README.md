@@ -4,19 +4,22 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.3.7**
+Current source version: **2.3.8**
 
-## Changes in 2.3.7
+## Changes in 2.3.8
 
-- Show the existing NPC alone against a stable dark backdrop.
-- Keep the preview facing forward when switching between outfit and wig screens.
-- Zoom closer for wigs and hair colors, returning to full-body framing for outfits.
-- Hide the game HUD and hold the NPC still while Tailor is open, restoring the
-  previous states when Tailor closes.
+- Recover assigned wigs after follower dismissal and external equipment removal.
+- Slow the game timescale to 1 while Tailor is open and restore it on closing.
+- Place an outfit in multiple categories while preserving existing libraries and assignments.
+- Use any outfit with either NPC sex; wig categories keep their existing behavior.
+- Return to the generic assigned outfit when a situational outfit no longer applies.
+- Detect sleep entry and waking through the game's sleep state, including alternate sleep idles.
+- Rotate the preview camera by holding the controls or dragging, and reset it to the front.
+- Keep NPC movement held during preview while preserving behavior and animation processing.
 
 ## Features
 
-- Create and organize outfit categories for female and male NPCs.
+- Create shared outfit categories and place outfits in multiple categories.
 - Build outfits from armor records already loaded in the game.
 - Preview outfits and wigs on the selected NPC before saving an assignment.
 - Inspect hair in a closer preview that uses the NPC's existing in-game appearance.
@@ -44,8 +47,8 @@ OBody NG and SmoothCam are optional integrations. Tailor continues without
 them.
 
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
-The updated preview was confirmed in the author's AE setup. Other runtimes and
-renderer configurations need separate testing.
+The 2.3.8 source has passed native builds and automated checks. Gameplay testing
+of these changes is pending; runtimes and renderer configurations need separate testing.
 
 ## Building
 

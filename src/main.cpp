@@ -117,15 +117,18 @@ static void OnPostLoadGame()
     const auto generation = sGameLoadGeneration.load();
     SKSE::GetTaskInterface()->AddTask([generation]() {
         if (generation != sGameLoadGeneration.load()) return;
+        WigManager::GetSingleton().SetRecoveryEnabled(true);
         PowerHandler::GrantTailorPower();
         OutfitManager::GetSingleton().ReApplyAllAssignments();  // outfits first
         WigManager::GetSingleton().ReEquipAllAssignments();     // then wigs (order matters)
+        SituationHandler::GetSingleton()->StartSleepMonitoring();
     });
 }
 
 static void OnPreLoadGame()
 {
     sGameLoadGeneration.fetch_add(1);
+    WigManager::GetSingleton().SetRecoveryEnabled(false);
     TailorUI::GetSingleton().CloseForLifecycle(Tailor::Preview::EndReason::PreLoadGame);
     OBodyCompat::GetSingleton().OnPreLoadGame();
     CellHandler::InvalidatePendingOutfitTasks();
@@ -157,6 +160,7 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         break;
     case SKSE::MessagingInterface::kNewGame: {
         const auto generation = sGameLoadGeneration.fetch_add(1) + 1;
+        WigManager::GetSingleton().SetRecoveryEnabled(false);
         TailorUI::GetSingleton().CloseForLifecycle(Tailor::Preview::EndReason::NewGame);
         CellHandler::InvalidatePendingOutfitTasks();
         SituationHandler::GetSingleton()->ResetForGameLoad();
@@ -165,10 +169,12 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         // transition first. OBody may remain ready and emit no new callback.
         SKSE::GetTaskInterface()->AddTask([generation]() {
             if (generation != sGameLoadGeneration.load()) return;
+            WigManager::GetSingleton().SetRecoveryEnabled(true);
             OBodyCompat::GetSingleton().OnNewGame();
             PowerHandler::GrantTailorPower();
             OutfitManager::GetSingleton().ReApplyAllAssignments();
             WigManager::GetSingleton().ReEquipAllAssignments();
+            SituationHandler::GetSingleton()->StartSleepMonitoring();
         });
         break;
     }

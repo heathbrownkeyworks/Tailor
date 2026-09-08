@@ -55,7 +55,7 @@ namespace Tailor::Preview
         // Preserve the engine-initialized shader, including its fade owner.
         // AE lighting passes read that owner's currentFade even for this
         // NoFade/NiNode backdrop; replacing it with a null-owner property
-        // causes a null dereference in the backdrop's lighting pass.
+        // caused the 2026-09-05 03:08:23 crash on TAILOR_BackgroundPlane:0.
         _stage.reset(RE::NiNode::Create(3));
         if (!_stage) return false;
         _stage->name = "TAILOR_LivePreviewStage";
@@ -108,7 +108,6 @@ namespace Tailor::Preview
         if (Protected(node)) {
             _hidden.Release(node);
         } else {
-            if (node->GetAppCulled() && !_hidden.Owns(node)) return;
             _hidden.Hide(node);
         }
         // Room/portal rendering can visit descendants directly, bypassing a
@@ -291,10 +290,13 @@ namespace Tailor::Preview
         // before every tick; CursorMenu must not compete with those updates.
         HideWorldFeeders();
         _hidden.Reassert([&](const RE::NiAVObject* node) { return Protected(node); });
-        if (rebuilt || appearanceChanged || now >= _nextSweep) {
+        const bool cameraChanged = camera != _lastCamera || approach != _lastApproach;
+        if (rebuilt || appearanceChanged || cameraChanged || now >= _nextSweep) {
             Sweep(actor);
             _nextSweep = now + 250;
         }
+        _lastCamera = camera;
+        _lastApproach = approach;
         return true;
     }
 

@@ -2,6 +2,9 @@
 #include "events/SituationHandler.h"
 #include "preview/TailorPreviewSession.h"
 
+#include <chrono>
+#include <thread>
+
 namespace
 {
     // Replace one hair-tint material on a geometry with a per-actor cloned copy.
@@ -83,7 +86,118 @@ void WigManager::Initialize()
         }
     }
 
-    logger::info("WigManager initialized");
+    if (auto* events = RE::ScriptEventSourceHolder::GetSingleton()) {
+        events->AddEventSink<RE::TESEquipEvent>(this);
+        events->AddEventSink<RE::TESContainerChangedEvent>(this);
+    }
+    logger::info("WigManager initialized with assigned-wig armor-change recovery");
+}
+
+void WigManager::SetRecoveryEnabled(bool enabled)
+{
+    std::lock_guard lock(_mutex);
+    _wigRecovery.SetEnabled(enabled);
+}
+
+RE::BSEventNotifyControl WigManager::ProcessEvent(const RE::TESEquipEvent* event,
+    RE::BSTEventSource<RE::TESEquipEvent>*)
+{
+    if (!event || event->equipped || !event->actor) return RE::BSEventNotifyControl::kContinue;
+    QueueWigRecovery(event->actor->As<RE::Actor>(), event->baseObject);
+    return RE::BSEventNotifyControl::kContinue;
+}
+
+RE::BSEventNotifyControl WigManager::ProcessEvent(const RE::TESContainerChangedEvent* event,
+    RE::BSTEventSource<RE::TESContainerChangedEvent>*)
+{
+    if (!event || !event->oldContainer || event->oldContainer == event->newContainer) {
+        return RE::BSEventNotifyControl::kContinue;
+    }
+    QueueWigRecovery(RE::TESForm::LookupByID<RE::Actor>(event->oldContainer), event->baseObj);
+    return RE::BSEventNotifyControl::kContinue;
+}
+
+void WigManager::QueueWigRecovery(RE::Actor* actor, RE::FormID changedArmorId)
+{
+    if (!actor || actor->IsPlayerRef()) return;
+    // ForceNaked/swimwear removal can refresh equipment without another wig
+    // unequip. Any armor qualifies, including armor that does not use hair slots.
+    if (!RE::TESForm::LookupByID<RE::TESObjectARMO>(changedArmorId)) return;
+
+    std::lock_guard lock(_mutex);
+    const auto state = WigAssignments::GetSingleton().GetState(actor->GetFormID());
+    auto* armor = state ? state->currentWig.Resolve() : nullptr;
+    if (!armor) return;
+
+    const auto request = _wigRecovery.Queue(actor->GetFormID(), armor->GetFormID());
+    if (request) {
+        // Vanilla dismissal waits two seconds before clearing the follower alias.
+        // Wait real time: nested AddTask calls can drain in the same frame.
+        std::thread([this, handle = actor->GetHandle(), request = *request]() {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            SKSE::GetTaskInterface()->AddTask([this, handle, request]() { RecoverWig(handle, request); });
+        }).detach();
+    }
+}
+
+void WigManager::RecoverWig(RE::ActorHandle handle, Tailor::Wigs::WigRecoveryPolicy::Request request)
+{
+    std::lock_guard lock(_mutex);
+    if (!_wigRecovery.IsCurrent(request)) return;
+
+    const auto ref = handle.get();
+    auto* actor = ref.get();
+    auto& assignments = WigAssignments::GetSingleton();
+    const auto state = assignments.GetState(request.actorId);
+    auto* armor = state ? state->currentWig.Resolve() : nullptr;
+    const bool sameAssignment = armor && armor->GetFormID() == request.wigFormId;
+    const bool ready = actor && actor->GetFormID() == request.actorId &&
+        !actor->IsPlayerRef() && !actor->IsDead() && actor->Is3DLoaded();
+    const bool previewing = actor && actor == GetTarget() &&
+        (_cycleState || _previewState || Tailor::Preview::TailorPreviewSession::GetSingleton().IsActive());
+    const auto count = ready && armor ? GetActorItemCount(actor, armor) : 0;
+    const bool equipped = ready && armor && actor->GetWornArmor(armor->GetFormID());
+    const auto action = Tailor::Wigs::WigRecoveryPolicy::Decide(sameAssignment, ready, previewing, equipped, count);
+    auto* equipManager = RE::ActorEquipManager::GetSingleton();
+    if (action == Tailor::Wigs::RecoveryAction::Skip || !equipManager) {
+        _wigRecovery.Finish(request);
+        return;
+    }
+
+    const bool added = action == Tailor::Wigs::RecoveryAction::AddAndEquip;
+    if (added) {
+        actor->AddObjectToContainer(armor, nullptr, 1, nullptr);
+        assignments.MarkItemAdded(request.actorId);
+        assignments.Save();
+    }
+    if (auto* npc = actor->GetActorBase()) {
+        EnsureArmorAddonRace(armor, npc->GetRace(), npc->GetSex());
+    }
+    equipManager->EquipObject(actor, armor, nullptr, 1, nullptr, true, false, false, false);
+    ReApplyHairColor(actor);
+    ScheduleActorHairRetint(handle, {1, 5, 12});
+    logger::info("Wig recovery: requested '{}' on {:08X} after external armor change (inventory {}, added {})",
+        state->currentWig.name, request.actorId, count, added);
+
+    // Keep the request pending while the queued equip settles. Any immediate
+    // unequip caused by this repair is absorbed; do not fight an equipment loop.
+    std::thread([this, handle, request]() {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        SKSE::GetTaskInterface()->AddTask([this, handle, request]() {
+            std::lock_guard finishLock(_mutex);
+            if (!_wigRecovery.IsCurrent(request)) return;
+            const auto actorRef = handle.get();
+            if (actorRef && actorRef->Is3DLoaded() && !actorRef->IsDead()) {
+                if (actorRef->GetWornArmor(request.wigFormId)) {
+                    logger::info("Wig recovery: restored {:08X} on {:08X}", request.wigFormId, request.actorId);
+                } else {
+                    logger::warn("Wig recovery: {:08X} still unequipped on {:08X}; no repeated repair",
+                        request.wigFormId, request.actorId);
+                }
+            }
+            _wigRecovery.Finish(request);
+        });
+    }).detach();
 }
 
 bool WigManager::IsNFFManaged(RE::Actor* actor) const
@@ -211,6 +325,8 @@ bool WigManager::EquipWig(RE::Actor* actor, const WigEntry& wig)
         return false;
     }
 
+    std::lock_guard lock(_mutex);
+    const auto wigChange = _wigRecovery.BeginChange(actor->GetFormID());
     auto& assignments = WigAssignments::GetSingleton();
     auto existingState = assignments.GetState(actor->GetFormID());
     auto* oldArmor = existingState ? existingState->currentWig.Resolve() : nullptr;
@@ -258,6 +374,8 @@ bool WigManager::ResetWig(RE::Actor* actor)
         return false;
     }
 
+    std::lock_guard lock(_mutex);
+    const auto wigChange = _wigRecovery.BeginChange(actor->GetFormID());
     RemoveCurrentWig(actor);
     WigAssignments::GetSingleton().ClearAssignment(actor->GetFormID());
     WigAssignments::GetSingleton().Save();

@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <random>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include "outfit/OutfitAssignments.h"
@@ -22,11 +25,13 @@ public:
     void ClearCachedSituation(RE::FormID actorId);
     void ForceApplyForSituation(RE::Actor* actor);
     void ResetForGameLoad();
+    void StartSleepMonitoring();
 
 private:
     SituationHandler() = default;
 
     void EvaluateAllAssignedActors();
+    void PollSleepStates();
     static void ScheduleDelayedEval(std::chrono::milliseconds delay);
     static void ScheduleDelayedActorEval(RE::ActorHandle handle, std::chrono::milliseconds delay);
     static void ScheduleAutomaticRetry(
@@ -71,4 +76,10 @@ private:
     int ResolveOutfitForSituation(RE::FormID actorId, OutfitSituation situation);
     static float GetGameDaysPassed();
     std::mt19937 _rng{ std::random_device{}() };
+
+    std::unordered_map<RE::FormID, bool> _observedSleepStates;
+    std::atomic<bool> _sleepMonitoringEnabled{false};
+    std::atomic<bool> _sleepPollPending{false};
+    // Destroy/join the timer before the state it reads. It never accesses actors.
+    std::jthread _sleepMonitor;
 };

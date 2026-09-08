@@ -116,6 +116,7 @@ namespace Tailor::Preview
         _observedRevision = _appearanceRevision.load();
         _targetFormID.store(actor->GetFormID());
         _refresh = {};
+        _orbit.Reset();
         _cameraApplied = false;
         _framingValid = false;
         _baseApproach = {};
@@ -129,44 +130,26 @@ namespace Tailor::Preview
         }
         SetStatus(false, "Preparing live NPC preview...");
         (void)_policy.Activate();
-        logger::info("Tailor live actor preview: target={:08X}, AI was enabled={}",
-            actor->GetFormID(), _aiHold.WasEnabled());
+        logger::info("Tailor live actor preview: target={:08X}, movement-only hold, AI enabled={} (unchanged)",
+            actor->GetFormID(), actor->IsAIEnabled());
         return true;
     }
     void TailorPreviewSession::AcquireTargetHold(RE::Actor* actor)
     {
-        _aiHold.Acquire(*actor);
-        if (actor->GetLifeState() == RE::ACTOR_LIFE_STATE::kAlive) {
-            actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);
-            _policy.Acquire(Ownership::Restrained);
-        }
-        auto& flags = actor->GetActorRuntimeData().boolFlags;
-        if (!flags.any(RE::Actor::BOOL_FLAGS::kMovementBlocked)) {
-            flags.set(RE::Actor::BOOL_FLAGS::kMovementBlocked);
-            _policy.Acquire(Ownership::MovementBlocked);
-        }
+        _movementHold.Acquire(*actor);
     }
     void TailorPreviewSession::EnforceMovementHold(RE::Actor* actor)
     {
-        actor->GetActorRuntimeData().boolFlags.set(RE::Actor::BOOL_FLAGS::kMovementBlocked);
-        if (_policy.Owns(Ownership::Restrained) && actor->GetLifeState() == RE::ACTOR_LIFE_STATE::kAlive) {
-            actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);
-        }
-        if (auto* controller = actor->GetCharController()) controller->SetLinearVelocityImpl(0.0f);
+        _movementHold.Enforce(*actor);
     }
     void TailorPreviewSession::ReleaseTargetHold(RE::Actor* actor) noexcept
     {
         if (actor) {
-            if (_policy.Owns(Ownership::MovementBlocked)) {
-                actor->GetActorRuntimeData().boolFlags.reset(RE::Actor::BOOL_FLAGS::kMovementBlocked);
-            }
-            if (_policy.Owns(Ownership::Restrained) && actor->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained) {
-                actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
-            }
-            _aiHold.Restore(*actor);
-            logger::info("Tailor restored target {:08X}: AI enabled={}", actor->GetFormID(), actor->IsAIEnabled());
+            _movementHold.Restore(*actor);
+            logger::info("Tailor released target {:08X}: movement-only hold, AI enabled={} (unchanged)",
+                actor->GetFormID(), actor->IsAIEnabled());
         }
-        _aiHold.Reset();
+        _movementHold.Reset();
     }
     void TailorPreviewSession::End(EndReason reason) noexcept
     {
@@ -183,6 +166,7 @@ namespace Tailor::Preview
             }
         }
         _target = {};
+        _orbit.Reset();
         _lastRoot = nullptr;
         _refresh = {};
         _viewport = {};
@@ -224,7 +208,7 @@ namespace Tailor::Preview
         const bool changed = revision != _observedRevision;
         if (changed) {
             _observedRevision = revision;
-            _refresh.Request(now, true);
+            _refresh.Request(now);
         }
         EnforceMovementHold(actor);
         auto* root = actor->Get3D(false);
@@ -234,7 +218,6 @@ namespace Tailor::Preview
                 close(EndReason::TargetLost);
                 return;
             }
-            _aiHold.SetUpdating(*actor, true);
             return;
         }
         _missing3DSince = 0;
@@ -242,16 +225,15 @@ namespace Tailor::Preview
         if (rebuilt) {
             _lastRoot = root;
             _framingValid = false;
-            _refresh.Request(now, true);
+            _refresh.Request(now);
         }
         _refresh.AdvanceFrame();
         if (_refresh.IsSettled(now)) {
             _refresh.Complete();
             _framingValid = false;
         }
-        // Native equip/morph work needs a brief actor update window. Movement
-        // stays blocked throughout; no appearance is copied or reconstructed.
-        _aiHold.SetUpdating(*actor, _refresh.AllowUpdates());
+        // Equipment/morph updates process normally. The settling window only
+        // invalidates camera framing; it never changes actor processing.
         if (!_viewport.IsValid()) return;
         if (!_policy.Owns(Ownership::Camera)) {
             if (!AcquireCamera(actor) || !_scene.Begin(actor)) {
@@ -271,6 +253,14 @@ namespace Tailor::Preview
         const bool sendStatus = std::exchange(_statusDirty, false);
         lock.unlock();
         if (sendStatus) ui.SendPreviewState();
+    }
+
+    void TailorPreviewSession::SetOrbit(float yaw, std::uint64_t sequence)
+    {
+        std::scoped_lock lock(_mutex);
+        if (_policy.IsActive()) _orbit.Set(yaw, sequence);
+        // Keep the settled pivot while orbiting; animated head bounds would
+        // otherwise make the camera bob or zoom on each input packet.
     }
 
     void TailorPreviewSession::SetStatus(bool ready, std::string message)
@@ -500,22 +490,11 @@ namespace Tailor::Preview
         const float tanHalfVertical = tanHalfHorizontal / (std::max)(aspect, 0.1f);
         const auto fit = FitViewport(_viewport.x, _viewport.y, _viewport.width, _viewport.height,
             envelope.halfWidth, envelope.halfHeight, tanHalfHorizontal, tanHalfVertical);
-        const float distance = fit.distance;
-        const float lateral = fit.lateral;
-        const float vertical = fit.vertical;
-        const float cameraHeading = std::atan2(_baseApproach.x, _baseApproach.y) - fit.yawOffset;
-        _cameraApproach = {std::sin(cameraHeading), std::cos(cameraHeading), 0.0f};
-        const RE::NiPoint3 forward = _cameraApproach * -1.0f;
-        const RE::NiPoint3 right{forward.y, -forward.x, 0.0f};
-
         _framingCenter = center;
-        _framingDistance = distance;
-        _stagedTranslation = center - forward * distance - right * lateral;
-        _stagedTranslation.z -= vertical;
-        _stagedRotation.x = 0.0f;
-        _stagedRotation.y = std::atan2(forward.x, forward.y);
-        _framingValid = IsFinite(_stagedTranslation) &&
-            std::isfinite(_stagedRotation.y);
+        _framingDistance = fit.distance;
+        _framingFit = fit;
+        _framingValid = std::isfinite(fit.distance) && std::isfinite(fit.lateral) &&
+            std::isfinite(fit.vertical) && std::isfinite(fit.yawOffset);
         return _framingValid;
     }
 
@@ -526,6 +505,13 @@ namespace Tailor::Preview
         if (!camera || !freeState || camera->currentState.get() != freeState) {
             return false;
         }
+
+        const auto orbit = PlaceOrbitCamera(std::atan2(_baseApproach.x, _baseApproach.y),
+            _orbit.Yaw(), _framingFit);
+        _cameraApproach = {std::sin(orbit.heading), std::cos(orbit.heading), 0.0f};
+        _stagedTranslation = _framingCenter + RE::NiPoint3{orbit.x, orbit.y, orbit.z};
+        _stagedRotation = {0.0f, std::atan2(-_cameraApproach.x, -_cameraApproach.y)};
+        if (!IsFinite(_stagedTranslation) || !std::isfinite(_stagedRotation.y)) return false;
 
         freeState->translation = _stagedTranslation;
         freeState->rotation = _stagedRotation;

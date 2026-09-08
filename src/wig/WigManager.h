@@ -3,6 +3,7 @@
 #include "wig/WigAssignments.h"
 #include "wig/WigCategory.h"
 #include "wig/WigLibrary.h"
+#include "wig/WigRecoveryPolicy.h"
 
 #include <mutex>
 #include <optional>
@@ -36,12 +37,16 @@ struct ModWigList
     std::vector<InventoryWig> wigs;
 };
 
-class WigManager
+class WigManager : public RE::BSTEventSink<RE::TESEquipEvent>,
+                   public RE::BSTEventSink<RE::TESContainerChangedEvent>
 {
 public:
     static WigManager& GetSingleton();
 
     void Initialize();
+
+    // Disable and cancel queued recovery before loading; enable only once ready.
+    void SetRecoveryEnabled(bool enabled);
 
     // Target — set by TailorUI when opening, delegates to OutfitManager
     void       SetTarget(RE::Actor* actor);
@@ -120,6 +125,12 @@ private:
     WigManager() = default;
 
     void RemoveCurrentWig(RE::Actor* actor);
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* event,
+        RE::BSTEventSource<RE::TESEquipEvent>*) override;
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* event,
+        RE::BSTEventSource<RE::TESContainerChangedEvent>*) override;
+    void QueueWigRecovery(RE::Actor* actor, RE::FormID changedArmorId);
+    void RecoverWig(RE::ActorHandle handle, Tailor::Wigs::WigRecoveryPolicy::Request request);
 
     // Resolve the per-actor hair tint: custom color if set, else the NPC's natural
     // base-record color. Returns false (no-op) if neither. NiColor float space (8-bit / 128).
@@ -130,6 +141,7 @@ private:
     std::optional<CycleState>    _cycleState;
     std::optional<PreviewState>  _previewState;
     mutable std::recursive_mutex _mutex;
+    Tailor::Wigs::WigRecoveryPolicy _wigRecovery;
 
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _originalHairColors;
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _cachedColorForms;

@@ -18,54 +18,61 @@ namespace Tailor::Preview
     enum class Ownership : std::uint32_t
     {
         None = 0,
-        Restrained = 1u << 0,
-        MovementBlocked = 1u << 1,
         Camera = 1u << 2,
         SavingDisabled = 1u << 3,
         ExternalCamera = 1u << 4
     };
 
-    class ActorAIHold
+    template<class Camera> bool ExitFlyCameraForOpen(Camera* camera)
+    {
+        if (!camera || !camera->IsInFreeCameraMode()) return true;
+        // This API toggles modes; false means unpaused, not "disable".
+        // Guard it so ordinary gameplay can never accidentally enter fly mode.
+        camera->ToggleFreeCameraMode(false);
+        return !camera->IsInFreeCameraMode();
+    }
+
+    // Hold locomotion only. Actor processing, life state and animation graphs
+    // remain owned by Skyrim and other mods throughout the preview.
+    class ActorMovementHold
     {
     public:
         template<class Actor> void Acquire(Actor& actor)
         {
             if (_active) return;
-            _wasEnabled = actor.IsAIEnabled();
+            _wasBlocked = actor.GetActorRuntimeData().boolFlags.any(Actor::BOOL_FLAGS::kMovementBlocked);
             _active = true;
-            actor.EnableAI(false);
+            Enforce(actor);
         }
-        template<class Actor> void SetUpdating(Actor& actor, bool updating)
+        template<class Actor> void Enforce(Actor& actor)
         {
             if (!_active) return;
-            const bool enabled = _wasEnabled && updating;
-            if (actor.IsAIEnabled() != enabled) actor.EnableAI(enabled);
+            actor.GetActorRuntimeData().boolFlags.set(Actor::BOOL_FLAGS::kMovementBlocked);
+            if (auto* controller = actor.GetCharController()) controller->SetLinearVelocityImpl(0.0f);
         }
         template<class Actor> void Restore(Actor& actor)
         {
             if (!_active) return;
-            if (actor.IsAIEnabled() != _wasEnabled) actor.EnableAI(_wasEnabled);
+            if (!_wasBlocked) actor.GetActorRuntimeData().boolFlags.reset(Actor::BOOL_FLAGS::kMovementBlocked);
             Reset();
         }
-        void Reset() noexcept { _active = false; _wasEnabled = false; }
-        bool WasEnabled() const noexcept { return _wasEnabled; }
+        void Reset() noexcept { _active = false; _wasBlocked = false; }
     private:
         bool _active{false};
-        bool _wasEnabled{false};
+        bool _wasBlocked{false};
     };
 
     // AddTask can drain several callbacks in one frame: require time AND frames.
     class AppearanceUpdateWindow
     {
     public:
-        void Request(std::int64_t nowMs, bool allowUpdates)
+        void Request(std::int64_t nowMs)
         {
             if (!_pending) {
                 _deadlineMs = nowMs + 1500;
                 _frames = 0;
             }
             _pending = true;
-            _allowUpdates = _allowUpdates || allowUpdates;
             _dueMs = nowMs + 250;
             _stableFrames = 0;
         }
@@ -80,11 +87,9 @@ namespace Tailor::Preview
             return _pending && _frames >= 3 &&
                 ((nowMs >= _dueMs && _stableFrames >= 3) || nowMs >= _deadlineMs);
         }
-        bool AllowUpdates() const noexcept { return _pending && _allowUpdates; }
-        void Complete() noexcept { _pending = false; _allowUpdates = false; }
+        void Complete() noexcept { _pending = false; }
     private:
         bool _pending{false};
-        bool _allowUpdates{false};
         std::int64_t _dueMs{0}, _deadlineMs{0};
         unsigned _frames{0}, _stableFrames{0};
     };
@@ -112,6 +117,37 @@ namespace Tailor::Preview
     {
         float distance, lateral, vertical, yawOffset;
     };
+
+    class PreviewOrbit
+    {
+    public:
+        bool Set(float yaw, std::uint64_t sequence) noexcept
+        {
+            if (!std::isfinite(yaw) || !sequence || sequence <= _sequence) return false;
+            _yaw = std::remainder(yaw, 6.28318530718f);
+            _sequence = sequence;
+            return true;
+        }
+        float Yaw() const noexcept { return _yaw; }
+        void Reset() noexcept { _yaw = 0.0f; _sequence = 0; }
+    private:
+        float _yaw{0.0f};
+        std::uint64_t _sequence{0};
+    };
+
+    struct OrbitPlacement
+    {
+        float x, y, z, heading;
+    };
+
+    [[nodiscard]] inline OrbitPlacement PlaceOrbitCamera(
+        float actorHeading, float orbitYaw, const CameraFraming& fit)
+    {
+        const float heading = actorHeading + orbitYaw - fit.yawOffset;
+        const float x = std::sin(heading), y = std::cos(heading);
+        return {x * fit.distance + y * fit.lateral,
+            y * fit.distance - x * fit.lateral, -fit.vertical, heading};
+    }
 
     // Inputs are normalized HTML bounds and the world camera frustum tangents.
     // Keeping both in full-screen coordinates avoids double-applying viewport

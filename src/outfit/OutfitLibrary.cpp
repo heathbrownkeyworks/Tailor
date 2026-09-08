@@ -1,5 +1,8 @@
 #include "outfit/OutfitLibrary.h"
 
+#include <algorithm>
+#include <unordered_set>
+
 OutfitLibrary& OutfitLibrary::GetSingleton()
 {
     static OutfitLibrary singleton;
@@ -18,41 +21,31 @@ void OutfitLibrary::CreateDefaults()
     _categories.clear();
     _nextId = 1;
 
-    auto addDefault = [&](const std::string& name, const std::string& sex) {
+    auto addDefault = [&](const std::string& name) {
         OutfitCategory cat;
         cat.id = _nextId++;
         cat.name = name;
-        cat.sex = sex;
         cat.isDefault = true;
         _categories.push_back(std::move(cat));
     };
 
-    addDefault("Heavy Armor", "female");
-    addDefault("Light Armor", "female");
-    addDefault("Clothing", "female");
-    addDefault("Heavy Armor", "male");
-    addDefault("Light Armor", "male");
-    addDefault("Clothing", "male");
+    addDefault("Heavy Armor");
+    addDefault("Light Armor");
+    addDefault("Clothing");
 
-    // Situation pool categories — sex-specific (v2.0+) so NPCs only see outfits matching their sex.
-    auto addSituationDefault = [&](const std::string& name, const std::string& sitType, const std::string& sex) {
+    auto addSituationDefault = [&](const std::string& name, const std::string& sitType) {
         OutfitCategory cat;
         cat.id = _nextId++;
         cat.name = name;
-        cat.sex = sex;
         cat.isDefault = true;
         cat.situationType = sitType;
         _categories.push_back(std::move(cat));
     };
 
-    addSituationDefault("Adventuring", "adventuring", "female");
-    addSituationDefault("Town",        "town",        "female");
-    addSituationDefault("Home",        "home",        "female");
-    addSituationDefault("Sleep",       "sleep",       "female");
-    addSituationDefault("Adventuring", "adventuring", "male");
-    addSituationDefault("Town",        "town",        "male");
-    addSituationDefault("Home",        "home",        "male");
-    addSituationDefault("Sleep",       "sleep",       "male");
+    addSituationDefault("Adventuring", "adventuring");
+    addSituationDefault("Town",        "town");
+    addSituationDefault("Home",        "home");
+    addSituationDefault("Sleep",       "sleep");
 
     logger::info("OutfitLibrary: created {} default categories", _categories.size());
 }
@@ -130,44 +123,32 @@ void OutfitLibrary::Load()
 
             logger::info("OutfitLibrary: loaded {} categories (nextId={})", _categories.size(), _nextId);
 
-            // v2.0 migration: situation pool categories are now sex-specific (one female + one male per situationType).
-            // Any legacy entry with sex="" gets re-tagged as "female" (preserves the data in the female pool);
-            // a matching empty "male" entry is added if missing.
-            auto hasSitCatForSex = [&](const std::string& sitType, const std::string& sex) {
+            // Keep existing categories, IDs, memberships and legacy metadata intact.
+            // Older libraries may lack situations entirely; add one shared pool per missing type.
+            auto hasSitCat = [&](const std::string& sitType) {
                 for (auto& cat : _categories) {
-                    if (cat.situationType == sitType && cat.sex == sex) return true;
+                    if (cat.situationType == sitType) return true;
                 }
                 return false;
             };
-            auto addSitCatForSex = [&](const std::string& name, const std::string& sitType, const std::string& sex) {
-                if (hasSitCatForSex(sitType, sex)) return;
+            auto addSitCat = [&](const std::string& name, const std::string& sitType) {
+                if (hasSitCat(sitType)) return;
                 OutfitCategory cat;
                 cat.id = _nextId++;
                 cat.name = name;
-                cat.sex = sex;
                 cat.isDefault = true;
                 cat.situationType = sitType;
                 _categories.push_back(std::move(cat));
                 needsMigration = true;
-                logger::info("OutfitLibrary: migrated — added situation category '{}' ({})", name, sex);
+                logger::info("OutfitLibrary: added shared situation category '{}'", name);
             };
 
-            // Step 1: re-tag any legacy unisex situation pool as female (preserves existing assignments)
-            for (auto& cat : _categories) {
-                if (!cat.situationType.empty() && cat.sex.empty()) {
-                    cat.sex = "female";
-                    needsMigration = true;
-                    logger::info("OutfitLibrary: migrated — relabeled '{}' situation pool sex \"\" -> \"female\"", cat.name);
-                }
-            }
-            // Step 2: ensure both sexes have a pool for each situationType
             auto situationNames = std::vector<std::pair<std::string, std::string>>{
                 {"Adventuring", "adventuring"}, {"Town", "town"},
                 {"Home",        "home"},        {"Sleep","sleep"}
             };
             for (auto& [name, sitType] : situationNames) {
-                addSitCatForSex(name, sitType, "female");
-                addSitCatForSex(name, sitType, "male");
+                addSitCat(name, sitType);
             }
         } catch (const std::exception& e) {
             logger::error("OutfitLibrary: failed to parse library.json: {}", e.what());
@@ -222,27 +203,38 @@ const std::vector<OutfitCategory>& OutfitLibrary::GetCategories() const
     return _categories;
 }
 
-std::vector<OutfitCategory> OutfitLibrary::GetCategoriesForSex(const std::string& sex) const
+std::string OutfitLibrary::GetCategoryDisplayName(int id) const
 {
     std::lock_guard lock(_mutex);
-    std::vector<OutfitCategory> result;
-    for (auto& cat : _categories) {
-        if (cat.sex == sex || cat.sex.empty()) {
-            result.push_back(cat);
+    // Distinguish preserved same-name categories without renaming saved records.
+    std::unordered_set<std::string> reserved, used;
+    for (const auto& cat : _categories) reserved.insert(cat.name);
+    for (const auto& cat : _categories) {
+        auto label = cat.name;
+        if (used.contains(label)) {
+            int suffix = 2;
+            do {
+                label = cat.name + " (" + std::to_string(suffix++) + ")";
+            } while (used.contains(label) || reserved.contains(label));
+        }
+        used.insert(label);
+        if (cat.id == id) return label;
+    }
+    return {};
+}
+
+std::vector<int> OutfitLibrary::GetSituationOutfitIds(const std::string& sitType) const
+{
+    std::lock_guard lock(_mutex);
+    std::vector<int> result;
+    for (const auto& cat : _categories) {
+        if (cat.situationType == sitType) {
+            for (int id : cat.outfitIds) {
+                if (id > 0 && std::find(result.begin(), result.end(), id) == result.end()) result.push_back(id);
+            }
         }
     }
     return result;
-}
-
-const OutfitCategory* OutfitLibrary::GetCategoryBySituationType(const std::string& sitType, const std::string& sex) const
-{
-    std::lock_guard lock(_mutex);
-    for (auto& cat : _categories) {
-        if (cat.situationType == sitType && cat.sex == sex) {
-            return &cat;
-        }
-    }
-    return nullptr;
 }
 
 const OutfitCategory* OutfitLibrary::GetCategoryById(int id) const
@@ -258,20 +250,19 @@ const OutfitCategory* OutfitLibrary::GetCategoryById(int id) const
 
 // --- Category mutations ---
 
-int OutfitLibrary::AddCategory(const std::string& name, const std::string& sex)
+int OutfitLibrary::AddCategory(const std::string& name)
 {
     std::lock_guard lock(_mutex);
 
     OutfitCategory cat;
     cat.id = _nextId++;
     cat.name = name;
-    cat.sex = sex;
     cat.isDefault = false;
 
     int id = cat.id;
     _categories.push_back(std::move(cat));
 
-    logger::info("OutfitLibrary: added category '{}' ({}) with id {}", name, sex, id);
+    logger::info("OutfitLibrary: added category '{}' with id {}", name, id);
     return id;
 }
 
@@ -356,4 +347,17 @@ void OutfitLibrary::RemoveOutfitFromAllCategories(int outfitId)
         std::erase(cat.outfitIds, outfitId);
     }
     logger::info("OutfitLibrary: removed outfit {} from all categories", outfitId);
+}
+
+void OutfitLibrary::SetOutfitCategories(int outfitId, const std::vector<int>& categoryIds)
+{
+    std::lock_guard lock(_mutex);
+    for (auto& cat : _categories) {
+        const bool selected = std::find(categoryIds.begin(), categoryIds.end(), cat.id) != categoryIds.end();
+        if (!selected) {
+            std::erase(cat.outfitIds, outfitId);
+        } else if (std::find(cat.outfitIds.begin(), cat.outfitIds.end(), outfitId) == cat.outfitIds.end()) {
+            cat.outfitIds.push_back(outfitId);
+        }
+    }
 }

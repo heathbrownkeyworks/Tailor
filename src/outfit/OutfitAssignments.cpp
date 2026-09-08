@@ -310,8 +310,6 @@ void OutfitAssignments::AssignSituation(RE::FormID actorRuntimeId, OutfitSituati
     std::lock_guard lock(_mutex);
     auto& a = _assignments[actorRuntimeId];
     a.SetSlot(situation, outfitId);
-    // Clear legacy single-outfit when entering situational mode
-    a.outfitId = 0;
     logger::info("OutfitAssignments: assigned situation {} outfit {} to actor 0x{:X}",
         static_cast<int>(situation), outfitId, actorRuntimeId);
 }
@@ -322,10 +320,8 @@ void OutfitAssignments::ClearSituation(RE::FormID actorRuntimeId, OutfitSituatio
     auto it = _assignments.find(actorRuntimeId);
     if (it == _assignments.end()) return;
     it->second.ClearSlot(situation);
-    // If no slots remain, remove the entry entirely
-    if (!it->second.HasAnySituation() && it->second.outfitId <= 0) {
-        _assignments.erase(it);
-    }
+    // Keep generic assignment and original-outfit tracking. Final unassignment
+    // goes through OutfitManager::ResetOutfit so restoration completes first.
     logger::info("OutfitAssignments: cleared situation {} for actor 0x{:X}",
         static_cast<int>(situation), actorRuntimeId);
 }
@@ -333,7 +329,9 @@ void OutfitAssignments::ClearSituation(RE::FormID actorRuntimeId, OutfitSituatio
 void OutfitAssignments::ClearAllSituations(RE::FormID actorRuntimeId)
 {
     std::lock_guard lock(_mutex);
-    _assignments.erase(actorRuntimeId);
+    auto it = _assignments.find(actorRuntimeId);
+    if (it == _assignments.end()) return;
+    it->second.ClearSituations();
     logger::info("OutfitAssignments: cleared all situations for actor 0x{:X}", actorRuntimeId);
 }
 

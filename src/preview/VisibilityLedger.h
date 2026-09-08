@@ -15,15 +15,18 @@ namespace Tailor::Preview
         bool Owns(Pointer node) const { return _hidden.contains(node); }
         bool Hide(Pointer node)
         {
-            if (!node || node->GetAppCulled()) return false;
-            _hidden.try_emplace(node, node);
+            if (!node) return false;
+            const bool wasHidden = node->GetAppCulled();
+            // Off-camera branches can be revealed by Skyrim during an orbit.
+            // Track them now and preserve their original visibility on close.
+            _hidden.try_emplace(node, Entry{StrongPointer(node), wasHidden});
             node->SetAppCulled(true);
-            return true;
+            return !wasHidden;
         }
         void Release(Pointer node)
         {
             if (auto it = _hidden.find(node); it != _hidden.end()) {
-                node->SetAppCulled(false);
+                node->SetAppCulled(it->second.wasHidden);
                 _hidden.erase(it);
             }
         }
@@ -32,7 +35,7 @@ namespace Tailor::Preview
             for (auto it = _hidden.begin(); it != _hidden.end();) {
                 auto* node = it->first;
                 if (keep(node)) {
-                    node->SetAppCulled(false);
+                    node->SetAppCulled(it->second.wasHidden);
                     it = _hidden.erase(it);
                 } else {
                     node->SetAppCulled(true);
@@ -42,11 +45,12 @@ namespace Tailor::Preview
         }
         void Restore()
         {
-            for (auto& [node, hold] : _hidden) node->SetAppCulled(false);
+            for (auto& [node, entry] : _hidden) node->SetAppCulled(entry.wasHidden);
             _hidden.clear();
         }
         std::size_t Size() const { return _hidden.size(); }
     private:
-        std::unordered_map<Pointer, StrongPointer> _hidden;
+        struct Entry { StrongPointer hold; bool wasHidden; };
+        std::unordered_map<Pointer, Entry> _hidden;
     };
 }

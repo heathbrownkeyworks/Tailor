@@ -1,9 +1,11 @@
 #include "events/SituationHandler.h"
+#include "events/SleepStatePolicy.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitManager.h"
 #include "outfit/OutfitStore.h"
 #include "wig/WigAssignments.h"
 #include "wig/WigManager.h"
+#include "ui/TailorUI.h"
 #include <cmath>
 #include <thread>
 #include <chrono>
@@ -11,6 +13,24 @@
 namespace
 {
     std::atomic<std::uint64_t> sSituationGeneration{1};
+
+    bool IsSleepSituation(RE::Actor* actor)
+    {
+        if (Tailor::Situations::IsSleepState(actor->GetSitSleepState())) return true;
+
+        // Preserve furniture-based support for beds with unusual state/idle
+        // behavior. Native sleep intent does not require an occupied bed yet.
+        if (auto handle = actor->GetOccupiedFurniture(); handle) {
+            if (auto ref = handle.get()) {
+                if (auto* base = ref->GetBaseObject()) {
+                    if (auto* furniture = base->As<RE::TESFurniture>()) {
+                        return furniture->furnFlags.all(RE::TESFurniture::ActiveMarker::kCanSleep);
+                    }
+                }
+            }
+        }
+        return false;
+    }
 }
 
 SituationHandler* SituationHandler::GetSingleton()
@@ -53,30 +73,10 @@ OutfitSituation SituationHandler::EvaluateSituation(RE::Actor* actor) const
 {
     if (!actor) return OutfitSituation::Adventuring;
 
-    // Priority 1: Sleep — check furniture occupation first (most reliable; immune to
-    // package-state issues caused by gameplay overhauls). Falls back
-    // to GetSitSleepState() for edge cases where the actor reports sleep state without
-    // an occupied furniture handle.
-    if (auto furnHandle = actor->GetOccupiedFurniture(); furnHandle) {
-        if (auto furnRef = furnHandle.get()) {
-            if (auto* base = furnRef->GetBaseObject()) {
-                if (auto* furn = base->As<RE::TESFurniture>()) {
-                    if (furn->furnFlags.all(RE::TESFurniture::ActiveMarker::kCanSleep)) {
-                        logger::info("EvaluateSituation: {} occupying bed '{}' → Sleep",
-                            actor->GetDisplayFullName(), furn->GetFullName());
-                        return OutfitSituation::Sleep;
-                    }
-                }
-            }
-        }
-    }
-
-    auto sleepState = actor->GetSitSleepState();
-    if (sleepState == RE::SIT_SLEEP_STATE::kIsSleeping ||
-        sleepState == RE::SIT_SLEEP_STATE::kWaitingForSleepAnim ||
-        sleepState == RE::SIT_SLEEP_STATE::kWantToWake) {
+    // Priority 1: sleep intent, entry, sleep and waking; no idle names required.
+    if (IsSleepSituation(actor)) {
         logger::info("EvaluateSituation: {} sleepState={} → Sleep",
-            actor->GetDisplayFullName(), static_cast<int>(sleepState));
+            actor->GetDisplayFullName(), static_cast<int>(actor->GetSitSleepState()));
         return OutfitSituation::Sleep;
     }
 
@@ -125,31 +125,24 @@ int SituationHandler::ResolveRandomOutfit(RE::FormID actorId, OutfitSituation si
     int sitIdx = static_cast<int>(situation);
     if (sitIdx < 1 || sitIdx > 4) return 0;
 
-    // Sex-specific pool — v2.0+
-    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
-    if (!actor) return 0;
-    auto* npc = actor->GetActorBase();
-    if (!npc) return 0;
-    std::string sex = (npc->GetSex() == RE::SEX::kFemale) ? "female" : "male";
-
-    auto* cat = OutfitLibrary::GetSingleton().GetCategoryBySituationType(sitTypeMap[sitIdx], sex);
-    if (!cat || cat->outfitIds.empty()) return 0;
+    const auto pool = OutfitLibrary::GetSingleton().GetSituationOutfitIds(sitTypeMap[sitIdx]);
+    if (pool.empty()) return 0;
 
     auto& rs = _randomStates[actorId].slots[sitIdx - 1];
     float currentDay = GetGameDaysPassed();
 
     if (std::floor(currentDay) != std::floor(rs.lastRandomDay) || rs.lastRandomOutfitId == 0) {
         int previous = rs.lastRandomOutfitId;
-        int poolSize = static_cast<int>(cat->outfitIds.size());
+        int poolSize = static_cast<int>(pool.size());
         std::uniform_int_distribution<int> dist(0, poolSize - 1);
-        int picked = cat->outfitIds[dist(_rng)];
+        int picked = pool[dist(_rng)];
 
         // Avoid repeating the previous outfit when the pool has more than one option.
         // Without this the visual change is invisible to the user when the RNG repeats.
         if (poolSize > 1 && picked == previous) {
             int tries = 0;
             while (picked == previous && tries < 8) {
-                picked = cat->outfitIds[dist(_rng)];
+                picked = pool[dist(_rng)];
                 ++tries;
             }
         }
@@ -165,31 +158,12 @@ int SituationHandler::ResolveRandomOutfit(RE::FormID actorId, OutfitSituation si
 
 int SituationHandler::ResolveOutfitForSituation(RE::FormID actorId, OutfitSituation situation)
 {
-    auto& assignments = OutfitAssignments::GetSingleton();
-    bool isRandom = assignments.GetSituationRandom(actorId, situation);
-
-    int outfitId = 0;
-    if (isRandom) {
-        outfitId = ResolveRandomOutfit(actorId, situation);
-    } else {
-        outfitId = assignments.GetSituationOutfitId(actorId, situation);
-    }
-
-    // Fallback to Adventuring if no outfit for current situation
-    if (outfitId <= 0 && situation != OutfitSituation::Adventuring) {
-        bool advRandom = assignments.GetSituationRandom(actorId, OutfitSituation::Adventuring);
-        if (advRandom) {
-            outfitId = ResolveRandomOutfit(actorId, OutfitSituation::Adventuring);
-        } else {
-            outfitId = assignments.GetSituationOutfitId(actorId, OutfitSituation::Adventuring);
-        }
-        if (outfitId > 0) {
-            logger::info("ApplyForSituation: no outfit for situation {}, falling back to Adventuring",
-                static_cast<int>(situation));
-        }
-    }
-
-    return outfitId;
+    const auto* saved = OutfitAssignments::GetSingleton().GetAssignment(actorId);
+    if (!saved) return 0;
+    const auto assignment = *saved;
+    return assignment.ResolveOutfit(situation, [this, actorId](OutfitSituation slot) {
+        return ResolveRandomOutfit(actorId, slot);
+    });
 }
 
 void SituationHandler::ApplyForSituation(RE::Actor* actor)
@@ -200,9 +174,9 @@ void SituationHandler::ApplyForSituation(RE::Actor* actor)
     auto& wigAssignments = WigAssignments::GetSingleton();
     auto actorId = actor->GetFormID();
 
-    bool hasOutfitSituations = assignments.HasAnySituation(actorId);
+    bool hasOutfitAssignment = assignments.HasAnySituation(actorId) || assignments.GetOutfitId(actorId) > 0;
     bool hasWigSituations = wigAssignments.HasAnySituation(actorId);
-    if (!hasOutfitSituations && !hasWigSituations) {
+    if (!hasOutfitAssignment && !hasWigSituations) {
         return;
     }
 
@@ -231,7 +205,7 @@ void SituationHandler::ApplyForSituation(RE::Actor* actor)
     }
 
     // --- Outfit situational application ---
-    if (hasOutfitSituations) {
+    if (hasOutfitAssignment) {
         int outfitId = ResolveOutfitForSituation(actorId, situation);
         if (outfitId > 0) {
             auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
@@ -319,12 +293,73 @@ void SituationHandler::ForceApplyForSituation(RE::Actor* actor)
 
 void SituationHandler::ResetForGameLoad()
 {
+    _sleepMonitoringEnabled.store(false);
     sSituationGeneration.fetch_add(1);
+    _observedSleepStates.clear();
     _currentSituations.clear();
     _automaticRetryCounts.clear();
     _automaticRetryPending.clear();
     _randomStates.clear();
     logger::info("SituationHandler: cleared runtime situation state for game load");
+}
+
+void SituationHandler::StartSleepMonitoring()
+{
+    _sleepMonitoringEnabled.store(true);
+    if (_sleepMonitor.joinable()) return;
+
+    _sleepMonitor = std::jthread([this](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (stop.stop_requested()) return;
+            if (!_sleepMonitoringEnabled.load() || _sleepPollPending.exchange(true)) continue;
+
+            const auto generation = sSituationGeneration.load();
+            SKSE::GetTaskInterface()->AddTask([this, generation]() {
+                _sleepPollPending.store(false);
+                if (generation != sSituationGeneration.load() || !_sleepMonitoringEnabled.load()) return;
+                PollSleepStates();
+            });
+        }
+    });
+}
+
+void SituationHandler::PollSleepStates()
+{
+    auto* ui = RE::UI::GetSingleton();
+    if (!ui || ui->GameIsPaused() || ui->IsMenuOpen(RE::MainMenu::MENU_NAME) ||
+        ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || TailorUI::GetSingleton().IsOpen()) return;
+
+    std::unordered_set<RE::FormID> actorIds;
+    for (const auto& [id, assignment] : OutfitAssignments::GetSingleton().GetAll()) {
+        if (assignment.HasAnySituation()) actorIds.insert(id);
+    }
+    for (const auto& [id, assignment] : WigAssignments::GetSingleton().GetAllSituational()) {
+        if (assignment.HasAnySituation()) actorIds.insert(id);
+    }
+
+    std::erase_if(_observedSleepStates, [&actorIds](const auto& entry) {
+        return !actorIds.contains(entry.first);
+    });
+    for (auto id : actorIds) {
+        auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+        if (!actor || !actor->Is3DLoaded() || actor->IsPlayerRef() || actor->IsDead()) {
+            _observedSleepStates.erase(id);
+            continue;
+        }
+        // Leave a blocked transition unobserved so it can be applied after combat.
+        if (actor->IsInCombat()) continue;
+
+        const bool sleeping = IsSleepSituation(actor);
+        auto [it, inserted] = _observedSleepStates.try_emplace(id, sleeping);
+        const bool wasSleeping = inserted ? GetCachedSituation(id) == OutfitSituation::Sleep : it->second;
+        it->second = sleeping;
+        if (wasSleeping != sleeping) {
+            logger::info("SituationHandler: {} sleep transition {} -> {} (nativeState={})",
+                actor->GetDisplayFullName(), wasSleeping, sleeping, static_cast<int>(actor->GetSitSleepState()));
+            ApplyForSituation(actor);
+        }
+    }
 }
 
 void SituationHandler::EvaluateAllAssignedActors()
@@ -459,7 +494,6 @@ void SituationHandler::ScheduleDelayedActorEval(RE::ActorHandle handle, std::chr
             if (!ptr) return;
             auto* actor = ptr.get();
             if (!actor->Is3DLoaded()) return;
-            SituationHandler::GetSingleton()->ClearCachedSituation(actor->GetFormID());
             SituationHandler::GetSingleton()->ApplyForSituation(actor);
         });
     }).detach();
@@ -513,62 +547,21 @@ RE::BSEventNotifyControl SituationHandler::ProcessEvent(
         actor->GetDisplayFullName(), entering ? "entered" : "exited",
         static_cast<int>(sleepState));
 
-    // Check if the furniture itself is a bed (kCanSleep flag)
-    bool isBed = false;
-    if (auto* furnRef = event->targetFurniture.get()) {
-        if (auto* baseObj = furnRef->GetBaseObject()) {
-            if (auto* furn = baseObj->As<RE::TESFurniture>()) {
-                isBed = furn->furnFlags.all(RE::TESFurniture::ActiveMarker::kCanSleep);
-            }
-        }
-    }
-
     auto handle = actor->GetHandle();
-    if (entering && (sleepState == RE::SIT_SLEEP_STATE::kWantToSleep || isBed)) {
-        // NPC entering bed — apply sleep outfit/wig directly
-        // Check both kWantToSleep state and furniture kCanSleep flag for robustness
+    if (entering) {
+        // Re-read current state on the game thread. A queued event must not force
+        // Sleep after an interrupted entry, or duplicate a swap made by the poll.
         const auto generation = sSituationGeneration.load();
         SKSE::GetTaskInterface()->AddTask([handle, generation]() {
             if (generation != sSituationGeneration.load()) return;
             auto ptr = handle.get();
             if (!ptr) return;
             auto* a = ptr.get();
-            auto id = a->GetFormID();
-
-            // Sleep outfit (supports randomize)
-            int sleepOutfitId = SituationHandler::GetSingleton()->ResolveOutfitForSituation(id, OutfitSituation::Sleep);
-            if (sleepOutfitId > 0) {
-                auto* outfit = OutfitStore::GetSingleton().GetOutfitById(sleepOutfitId);
-                if (outfit) {
-                    if (!OutfitManager::GetSingleton().ApplyCustomOutfit(a, *outfit, true)) {
-                        auto* handler = SituationHandler::GetSingleton();
-                        handler->ClearCachedSituation(id);
-                        handler->ApplyForSituation(a);
-                        return;
-                    }
-                    logger::info("SituationHandler: applied sleep outfit '{}' on {} (furniture + kWantToSleep)",
-                        outfit->name, a->GetDisplayFullName());
-                }
-            }
-
-            // Sleep wig
-            auto& wigAssignments = WigAssignments::GetSingleton();
-            if (wigAssignments.HasAnySituation(id)) {
-                auto sleepWig = wigAssignments.GetSituationWig(id, OutfitSituation::Sleep);
-                if (sleepWig.formId != 0) {
-                    auto& wigMgr = WigManager::GetSingleton();
-                    wigMgr.EquipWig(a, sleepWig);
-                    wigMgr.ReApplyHairColor(a);
-                    wigMgr.ScheduleActorHairRetint(a->GetHandle(), {1, 5, 12});
-                    logger::info("SituationHandler: applied sleep wig '{}' on {} (furniture)",
-                        sleepWig.name, a->GetDisplayFullName());
-                }
-            }
-
-            SituationHandler::GetSingleton()->SetCachedSituation(id, OutfitSituation::Sleep);
+            if (!a->Is3DLoaded() || a->IsDead()) return;
+            SituationHandler::GetSingleton()->ApplyForSituation(a);
         });
     } else {
-        // Non-sleep furniture enter, or furniture exit — re-evaluate after delay
+        // Retain the delayed exit check; polling also catches long/custom exits.
         ScheduleDelayedActorEval(handle, std::chrono::seconds(2));
     }
     return RE::BSEventNotifyControl::kContinue;

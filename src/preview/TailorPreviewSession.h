@@ -31,6 +31,7 @@ namespace Tailor::Preview
         bool Begin(RE::ActorHandle a_target);
         void End(EndReason a_reason) noexcept;
         void SetViewport(ViewportRect a_viewport);
+        void SetOrbit(float a_yaw, std::uint64_t a_sequence);
         void Tick(std::uint64_t a_generation);
         void NotifyAppearanceChanged(RE::Actor* a_actor);
         [[nodiscard]] bool IsActive() const noexcept;
@@ -55,8 +56,9 @@ namespace Tailor::Preview
 
         mutable std::mutex _mutex;
         PreviewSessionPolicy _policy;
-        ActorAIHold _aiHold;
+        ActorMovementHold _movementHold;
         AppearanceUpdateWindow _refresh;
+        PreviewOrbit _orbit;
         RE::ActorHandle _target;
         ViewportRect _viewport;
         const RE::NiAVObject* _lastRoot{nullptr}; // identity only; never dereferenced
@@ -69,6 +71,7 @@ namespace Tailor::Preview
         PreviewScene _scene;
         RE::NiPoint3 _framingCenter{};
         float _framingDistance{0};
+        CameraFraming _framingFit{};
         RE::BSTSmartPointer<RE::TESCameraState> _savedCameraState;
         RE::FreeCameraState* _freeCameraState{nullptr};
         RE::NiPoint3 _savedFreeTranslation{};

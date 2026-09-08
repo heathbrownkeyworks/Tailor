@@ -11,10 +11,44 @@
 #include "wig/WigLibrary.h"
 #include "wig/WigManager.h"
 
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
+
 extern Meridian::UI::View::IViewAPI* g_MeridianView;
 
 namespace
 {
+    std::vector<int> ReadOutfitCategoryIds(const nlohmann::json& data, int outfitId = 0)
+    {
+        auto& library = OutfitLibrary::GetSingleton();
+        std::vector<int> ids;
+        if (data.contains("categoryIds")) {
+            const auto& selected = data.at("categoryIds");
+            if (!selected.is_array()) throw std::invalid_argument("categoryIds must be an array");
+            for (const auto& id : selected) {
+                if (!id.is_number_integer() || id <= 0 || id > (std::numeric_limits<int>::max)()) {
+                    throw std::invalid_argument("Invalid outfit category ID");
+                }
+                ids.push_back(id.get<int>());
+            }
+        } else {
+            // Older views send only one category. Preserve memberships they cannot display.
+            for (const auto& cat : library.GetCategories()) {
+                if (std::find(cat.outfitIds.begin(), cat.outfitIds.end(), outfitId) != cat.outfitIds.end()) {
+                    ids.push_back(cat.id);
+                }
+            }
+            const int categoryId = data.value("categoryId", 0);
+            if (categoryId > 0) ids.push_back(categoryId);
+        }
+        if (ids.empty()) throw std::invalid_argument("Select at least one outfit category");
+        for (int id : ids) {
+            if (!library.GetCategoryById(id)) throw std::invalid_argument("Outfit category no longer exists");
+        }
+        return ids;
+    }
+
     int CalcOutfitArmorRating(const CustomOutfit& outfit)
     {
         int total = 0;
@@ -408,7 +442,7 @@ void TailorUI::Initialize()
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("name", std::string{});
-                int categoryId = json.value("categoryId", 0);
+                const auto categoryIds = ReadOutfitCategoryIds(json);
 
                 std::vector<ArmorItem> items;
                 if (json.contains("items") && json["items"].is_array()) {
@@ -426,11 +460,9 @@ void TailorUI::Initialize()
                     int outfitId = store.AddOutfit(name, items);
                     store.Save();
 
-                    if (categoryId > 0) {
-                        auto& lib = OutfitLibrary::GetSingleton();
-                        lib.AddOutfitToCategory(categoryId, outfitId);
-                        lib.Save();
-                    }
+                    auto& lib = OutfitLibrary::GetSingleton();
+                    lib.SetOutfitCategories(outfitId, categoryIds);
+                    lib.Save();
 
                     auto& mgr = OutfitManager::GetSingleton();
                     auto* target = mgr.GetTarget();
@@ -444,7 +476,7 @@ void TailorUI::Initialize()
                     logger::info("Saved custom outfit '{}' (id={}) with {} items",
                         name, outfitId, items.size());
                 }
-            } catch (const nlohmann::json::exception& e) {
+            } catch (const std::exception& e) {
                 logger::error("tailorSaveOutfit: {}", e.what());
             }
         });
@@ -498,7 +530,7 @@ void TailorUI::Initialize()
                 auto json = nlohmann::json::parse(d);
                 int outfitId = json.value("outfitId", 0);
                 auto name = json.value("name", std::string{});
-                int categoryId = json.value("categoryId", 0);
+                const auto categoryIds = ReadOutfitCategoryIds(json, outfitId);
 
                 std::vector<ArmorItem> items;
                 if (json.contains("items") && json["items"].is_array()) {
@@ -513,14 +545,11 @@ void TailorUI::Initialize()
 
                 if (outfitId > 0 && !name.empty() && !items.empty()) {
                     auto& store = OutfitStore::GetSingleton();
-                    store.UpdateOutfit(outfitId, name, items);
+                    if (!store.UpdateOutfit(outfitId, name, items)) return;
                     store.Save();
 
                     auto& lib = OutfitLibrary::GetSingleton();
-                    lib.RemoveOutfitFromAllCategories(outfitId);
-                    if (categoryId > 0) {
-                        lib.AddOutfitToCategory(categoryId, outfitId);
-                    }
+                    lib.SetOutfitCategories(outfitId, categoryIds);
                     lib.Save();
 
                     auto& mgr = OutfitManager::GetSingleton();
@@ -534,7 +563,7 @@ void TailorUI::Initialize()
                     TailorUI::GetSingleton().SendCategories();
                     logger::info("Updated outfit '{}' (id={}) with {} items", name, outfitId, items.size());
                 }
-            } catch (const nlohmann::json::exception& e) {
+            } catch (const std::exception& e) {
                 logger::error("tailorUpdateOutfit: {}", e.what());
             }
         });
@@ -553,12 +582,11 @@ void TailorUI::Initialize()
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("name", std::string{});
-                auto sex = json.value("sex", std::string{});
 
-                if (name.empty() || sex.empty()) return;
+                if (name.empty()) return;
 
                 auto& lib = OutfitLibrary::GetSingleton();
-                lib.AddCategory(name, sex);
+                lib.AddCategory(name);
                 lib.Save();
                 TailorUI::GetSingleton().SendAllCategories();
                 TailorUI::GetSingleton().SendCategories();
@@ -701,10 +729,20 @@ void TailorUI::Initialize()
                 auto* target = mgr.GetTarget();
                 if (target && sit >= 1 && sit <= 4) {
                     auto& assignments = OutfitAssignments::GetSingleton();
-                    assignments.ClearSituation(target->GetFormID(), static_cast<OutfitSituation>(sit));
-                    assignments.Save();
+                    const auto* saved = assignments.GetAssignment(target->GetFormID());
+                    if (!saved) return;
+                    auto remaining = *saved;
+                    remaining.ClearSlot(static_cast<OutfitSituation>(sit));
+                    if (remaining.outfitId <= 0 && !remaining.HasAnySituation()) {
+                        // Restore before removing the last assignment and its original-outfit metadata.
+                        if (!mgr.ResetOutfit(target)) return;
+                    } else {
+                        assignments.ClearSituation(target->GetFormID(), static_cast<OutfitSituation>(sit));
+                        assignments.Save();
+                    }
                     SituationHandler::GetSingleton()->ForceApplyForSituation(target);
                     TailorUI::GetSingleton().SendSituationData();
+                    TailorUI::GetSingleton().SendTargetUpdate();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorClearSituation: {}", e.what());
@@ -719,10 +757,16 @@ void TailorUI::Initialize()
             auto* target = mgr.GetTarget();
             if (target) {
                 auto& assignments = OutfitAssignments::GetSingleton();
-                assignments.ClearAllSituations(target->GetFormID());
-                assignments.Save();
+                if (!assignments.HasAssignment(target->GetFormID())) return;
+                if (assignments.GetOutfitId(target->GetFormID()) <= 0) {
+                    if (!mgr.ResetOutfit(target)) return;
+                } else {
+                    assignments.ClearAllSituations(target->GetFormID());
+                    assignments.Save();
+                }
                 SituationHandler::GetSingleton()->ForceApplyForSituation(target);
                 TailorUI::GetSingleton().SendSituationData();
+                TailorUI::GetSingleton().SendTargetUpdate();
             }
         });
     });
@@ -738,11 +782,20 @@ void TailorUI::Initialize()
                 auto* target = mgr.GetTarget();
                 if (target && sit >= 1 && sit <= 4) {
                     auto& assignments = OutfitAssignments::GetSingleton();
-                    assignments.SetSituationRandom(target->GetFormID(),
-                        static_cast<OutfitSituation>(sit), random);
-                    assignments.Save();
+                    const auto* saved = assignments.GetAssignment(target->GetFormID());
+                    if (!saved && !random) return;
+                    auto remaining = saved ? *saved : SituationalAssignment{};
+                    remaining.SetRandomFlag(static_cast<OutfitSituation>(sit), random);
+                    if (remaining.outfitId <= 0 && !remaining.HasAnySituation()) {
+                        if (!mgr.ResetOutfit(target)) return;
+                    } else {
+                        assignments.SetSituationRandom(target->GetFormID(),
+                            static_cast<OutfitSituation>(sit), random);
+                        assignments.Save();
+                    }
                     SituationHandler::GetSingleton()->ForceApplyForSituation(target);
                     TailorUI::GetSingleton().SendSituationData();
+                    TailorUI::GetSingleton().SendTargetUpdate();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorToggleSituationRandom: {}", e.what());
@@ -1255,6 +1308,22 @@ void TailorUI::Initialize()
         });
     });
 
+    g_MeridianView->RegisterListener(_view, "tailorPreviewRotate", [](const char* arg) {
+        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+            try {
+                const auto json = nlohmann::json::parse(d);
+                auto& ui = TailorUI::GetSingleton();
+                if (!ui.IsOpen() || !ui.HasFocus()) return;
+                const auto generation = json.value("openGeneration", std::uint64_t{0});
+                if (!generation || generation != ui._previewOpenGeneration.load()) return;
+                Tailor::Preview::TailorPreviewSession::GetSingleton().SetOrbit(
+                    json.at("yaw").get<float>(), json.at("sequence").get<std::uint64_t>());
+            } catch (const nlohmann::json::exception& e) {
+                logger::warn("tailorPreviewRotate: {}", e.what());
+            }
+        });
+    });
+
     // Load both blacklists from disk
     LoadBlacklist();
     LoadWigBlacklist();
@@ -1309,7 +1378,7 @@ void TailorUI::Open()
 
     g_MeridianView->Show(_view);
     // The live preview session owns the target's hold. The world stays unpaused
-    // so outfit/morph updates can settle inside bounded refresh windows.
+    // so outfit/morph updates and idle animations continue normally.
     const auto focusResult = g_MeridianView->TryFocus(
         _view, Meridian::UI::View::FocusMode::Unpaused);
     if (focusResult != Meridian::UI::View::FocusResult::Granted &&
@@ -1323,6 +1392,18 @@ void TailorUI::Open()
     }
 
     _isOpen = true;
+    if (auto* calendar = RE::Calendar::GetSingleton(); calendar && calendar->timeScale) {
+        _originalTimeScale = calendar->GetTimescale();
+        calendar->timeScale->value = 1.0f;
+        logger::info("TailorUI: timescale {} -> 1 while open", *_originalTimeScale);
+    }
+    // Exit a pre-existing TFC session before the preview captures its return
+    // camera. Only run after focus succeeds, including opens without an NPC.
+    if (!Tailor::Preview::ExitFlyCameraForOpen(RE::PlayerCamera::GetSingleton())) {
+        logger::warn("TailorUI: could not exit the existing fly camera; closing");
+        CloseForLifecycle(Tailor::Preview::EndReason::SetupFailed);
+        return;
+    }
     _gameMenus.Hide(RE::UI::GetSingleton());
     if (target) Tailor::Preview::TailorPreviewSession::GetSingleton().Begin(target->GetHandle());
     const auto previewOpenGeneration = ++_previewOpenGeneration;
@@ -1342,6 +1423,14 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
     const bool wasOpen = _isOpen.exchange(false);
     ++_previewOpenGeneration;
     // Restore even on repeated/lifecycle cleanup and without a Meridian view.
+    if (_originalTimeScale.has_value()) {
+        const float originalTimeScale = *_originalTimeScale;
+        _originalTimeScale.reset();
+        if (auto* calendar = RE::Calendar::GetSingleton(); calendar && calendar->timeScale) {
+            calendar->timeScale->value = originalTimeScale;
+            logger::info("TailorUI: restored timescale {}", originalTimeScale);
+        }
+    }
     _gameMenus.Restore(RE::UI::GetSingleton());
     if (!wasOpen) {
         Tailor::Preview::TailorPreviewSession::GetSingleton().End(reason);
@@ -1441,11 +1530,13 @@ void TailorUI::SendTargetUpdate()
     if (target) {
         auto* assignment = OutfitAssignments::GetSingleton().GetAssignment(target->GetFormID());
         if (assignment) {
-            // Check situational outfit first, then adventuring fallback
+            // Check situational outfit first, then Adventuring and generic fallbacks.
             auto situation = SituationHandler::GetSingleton()->EvaluateSituation(target);
             int outfitId = assignment->GetSlot(situation);
             if (outfitId <= 0)
                 outfitId = assignment->adventuringId;
+            if (outfitId <= 0)
+                outfitId = assignment->outfitId;
             if (outfitId > 0) {
                 auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
                 if (outfit) currentOutfit = outfit->name;
@@ -1462,16 +1553,16 @@ void TailorUI::SendCategories()
 {
     if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
-    auto& mgr = OutfitManager::GetSingleton();
-    auto sex = mgr.GetTargetSex();
-
-    auto categories = OutfitLibrary::GetSingleton().GetCategoriesForSex(sex);
+    auto& lib = OutfitLibrary::GetSingleton();
+    auto categories = lib.GetCategories();
 
     nlohmann::json arr = nlohmann::json::array();
     for (auto& cat : categories) {
         arr.push_back({
             {"id", cat.id},
             {"name", cat.name},
+            {"displayName", lib.GetCategoryDisplayName(cat.id)},
+            {"situationType", cat.situationType},
             {"outfitCount", static_cast<int>(cat.outfitIds.size())},
             {"isDefault", cat.isDefault}
         });
@@ -1555,10 +1646,12 @@ void TailorUI::SendOutfits()
     nlohmann::json arr = nlohmann::json::array();
     for (auto& outfit : outfits) {
         nlohmann::json catNames = nlohmann::json::array();
+        nlohmann::json categoryIds = nlohmann::json::array();
         for (auto& cat : categories) {
             for (auto id : cat.outfitIds) {
                 if (id == outfit.id) {
-                    catNames.push_back(cat.name);
+                    catNames.push_back(lib.GetCategoryDisplayName(cat.id));
+                    categoryIds.push_back(cat.id);
                     break;
                 }
             }
@@ -1575,6 +1668,7 @@ void TailorUI::SendOutfits()
             {"itemCount", static_cast<int>(outfit.items.size())},
             {"armorRating", CalcOutfitArmorRating(outfit)},
             {"categories", catNames},
+            {"categoryIds", categoryIds},
             {"hasEnchanted", hasEnchanted}
         });
     }
@@ -1673,23 +1767,23 @@ void TailorUI::SendOutfitData(int outfitId)
     auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
     if (!outfit) return;
 
-    int categoryId = 0;
+    std::vector<int> categoryIds;
     auto& categories = OutfitLibrary::GetSingleton().GetCategories();
     for (auto& cat : categories) {
         for (auto id : cat.outfitIds) {
             if (id == outfitId) {
-                categoryId = cat.id;
+                categoryIds.push_back(cat.id);
                 break;
             }
         }
-        if (categoryId > 0) break;
     }
 
     nlohmann::json data;
     data["outfitId"] = outfit->id;
     data["name"] = outfit->name;
     data["armorRating"] = CalcOutfitArmorRating(*outfit);
-    data["categoryId"] = categoryId;
+    data["categoryIds"] = categoryIds;
+    data["categoryId"] = categoryIds.empty() ? 0 : categoryIds.front();  // Older views.
     data["items"] = nlohmann::json::array();
 
     for (auto& item : outfit->items) {
@@ -1725,42 +1819,30 @@ void TailorUI::SendAllCategories()
     auto& lib = OutfitLibrary::GetSingleton();
     auto& allCats = lib.GetCategories();
 
-    int femaleCustomCount = 0;
-    int maleCustomCount = 0;
-
     nlohmann::json catArr = nlohmann::json::array();
     nlohmann::json poolArr = nlohmann::json::array();
     for (auto& cat : allCats) {
         if (cat.isDefault) {
-            // Surface situation pools (read-only) so the Categories panel can show their counts.
-            if (!cat.situationType.empty()) {
-                poolArr.push_back({
-                    {"id", cat.id},
-                    {"name", cat.name},
-                    {"sex", cat.sex},
-                    {"situationType", cat.situationType},
-                    {"outfitCount", static_cast<int>(cat.outfitIds.size())}
-                });
-            }
             continue;
         }
-
-        if (cat.sex == "female") femaleCustomCount++;
-        if (cat.sex == "male") maleCustomCount++;
 
         catArr.push_back({
             {"id", cat.id},
             {"name", cat.name},
-            {"sex", cat.sex},
+            {"displayName", lib.GetCategoryDisplayName(cat.id)},
             {"outfitCount", static_cast<int>(cat.outfitIds.size())}
         });
+    }
+    for (const auto& [name, type] : std::vector<std::pair<std::string, std::string>>{
+            {"Adventuring", "adventuring"}, {"Town", "town"}, {"Home", "home"}, {"Sleep", "sleep"}}) {
+        poolArr.push_back({{"name", name}, {"situationType", type},
+            {"outfitCount", static_cast<int>(lib.GetSituationOutfitIds(type).size())}});
     }
 
     nlohmann::json data;
     data["categories"] = catArr;
     data["situationPools"] = poolArr;
-    data["femaleCustomCount"] = femaleCustomCount;
-    data["maleCustomCount"] = maleCustomCount;
+    data["customCount"] = catArr.size();
 
     std::string js = std::format("tailorSetAllCategories({})", data.dump());
     g_MeridianView->ExecuteJavaScript(_view, js.c_str());
@@ -1828,13 +1910,9 @@ void TailorUI::SendSituationData()
     data["sleepRandom"] = sa ? sa->sleepRandom : false;
 
     // Situation category outfit counts (for "Random from pool (X outfits)" display)
-    // Pool is sex-specific (v2.0+) — look up using the target's sex.
     auto& lib = OutfitLibrary::GetSingleton();
-    auto* targetNpc = target->GetActorBase();
-    std::string targetSex = (targetNpc && targetNpc->GetSex() == RE::SEX::kFemale) ? "female" : "male";
     auto getCatCount = [&](const std::string& sitType) -> int {
-        auto* cat = lib.GetCategoryBySituationType(sitType, targetSex);
-        return cat ? static_cast<int>(cat->outfitIds.size()) : 0;
+        return static_cast<int>(lib.GetSituationOutfitIds(sitType).size());
     };
     data["adventuringCatCount"] = getCatCount("adventuring");
     data["townCatCount"] = getCatCount("town");

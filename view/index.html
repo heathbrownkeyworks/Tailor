@@ -302,7 +302,6 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
   border-bottom: 1px solid rgba(244, 235, 216, 0.08);
   white-space: nowrap;
 }
-.t-cat-table thead th.t-cat-col-sex,
 .t-cat-table thead th.t-cat-col-count { text-align: center; }
 .t-cat-table thead th:first-child { border-top-left-radius: var(--radius-xl); padding-left: 16px; }
 .t-cat-table thead th:last-child  { border-top-right-radius: var(--radius-xl); padding-right: 16px; }
@@ -337,28 +336,6 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
 .t-cat-row:active:not(.disabled) td { background: rgba(245, 158, 11, 0.10); }
 .t-cat-row.disabled { cursor: default; }
 .t-cat-row.disabled td { color: var(--fg-3); }
-
-/* Sex pill (column 2) — header + body cells both centered */
-.t-cat-col-sex { width: 100px; text-align: center; }
-.t-cat-sex {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: 'Poppins', sans-serif;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 3px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-  min-width: 56px;
-  box-sizing: border-box;
-}
-.t-cat-sex.female { background: rgba(224, 160, 142, 0.12); color: #e0a08e; border: 1px solid rgba(224, 160, 142, 0.25); }
-.t-cat-sex.male   { background: rgba(158, 184, 217, 0.12); color: #9eb8d9; border: 1px solid rgba(158, 184, 217, 0.25); }
-.t-cat-sex.unisex { background: rgba(217, 149, 99, 0.12); color: var(--copper-light); border: 1px solid rgba(184, 115, 51, 0.30); }
-.t-cat-row.disabled .t-cat-sex { opacity: 0.55; }
 
 /* Name column */
 .t-cat-name {
@@ -623,7 +600,25 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
   inset: 0;
   overflow: hidden;
   cursor: default;
+  touch-action: none;
+  user-select: none;
 }
+.court.preview-active #npcStage { bottom: 78px; cursor: grab; }
+.court.preview-active #npcStage.rotating { cursor: grabbing; }
+.stage-rotation {
+  display: none;
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  white-space: nowrap;
+}
+.court.preview-active .stage-rotation { display: block; }
+.stage-rotation-buttons { display: flex; justify-content: center; gap: 8px; }
+.stage-rotation .t-btn { min-width: 44px; min-height: 40px; padding: 8px 14px; font-size: 12px; touch-action: none; }
+.stage-rotation .t-btn.holding { border-color: var(--amber); color: var(--amber-light); background: var(--surface-active); }
+.stage-rotation-hint { margin-top: 6px; font-size: 10px; color: var(--fg-3); letter-spacing: 0.04em; }
 
 /* No-target hint — hidden the moment a target exists, leaving the void clean */
 .stage-hint {
@@ -1080,6 +1075,8 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
 .t-dropdown-item:hover { background: var(--surface-hover); }
 .t-dropdown-item.selected { color: var(--amber); }
 .t-dropdown-item .item-count { font-size: 14px; color: var(--text-dim); margin-left: auto; }
+.t-category-checkbox { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--amber); }
+.t-category-note { padding: 8px 16px; font-size: 13px; color: var(--text-dim); }
 
 /* Search / Text input */
 .t-search, .t-input {
@@ -1608,7 +1605,6 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
             <thead>
               <tr>
                 <th>Category</th>
-                <th class="t-cat-col-sex">Sex</th>
                 <th class="t-cat-col-count">Outfits</th>
                 <th class="t-cat-col-chev"></th>
               </tr>
@@ -1853,20 +1849,14 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     <span class="help-icon">?<span class="help-tooltip">Create as many custom categories as you like. Select a category to <strong style="color:var(--text)">rename</strong> or <strong style="color:var(--text)">delete</strong> it.</span></span>
   </div>
 
-  <!-- Create row: Name (line 1) + Sex radios / Create (line 2) -->
+  <!-- Create row: Name and Create -->
   <div style="display:flex; flex-direction:column; gap:12px; padding:16px 20px; border-bottom:1px solid rgba(244,235,216,0.06);">
     <div class="t-search-wrap">
       <input id="catNewName" class="t-input" type="text" placeholder="New category name..." oninput="onSearchInput(this, 'catNewNameClear')">
       <button id="catNewNameClear" class="t-search-clear" onclick="clearSearchInput('catNewName', 'catNewNameClear')">&times;</button>
     </div>
     <div style="display:flex; align-items:center; gap:14px;">
-      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; color:var(--fg-1);">
-        <input type="radio" name="catSex" value="female" checked style="accent-color:var(--amber);" onchange="updateCatSexCount()" /> Female
-      </label>
-      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; color:var(--fg-1);">
-        <input type="radio" name="catSex" value="male" style="accent-color:var(--amber);" onchange="updateCatSexCount()" /> Male
-      </label>
-      <span id="catSexCount" class="meta" style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); margin-left:2px; letter-spacing:0.05em;">0</span>
+      <span id="catCustomCount" class="meta" style="font-family:var(--font-mono); font-size:11px; color:var(--fg-3); letter-spacing:0.05em;">0 custom categories</span>
       <button class="t-btn t-btn-primary t-btn-small" style="margin-left:auto;" onclick="doAddCategory()">Create</button>
     </div>
   </div>
@@ -2419,17 +2409,17 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         <path d="M20.38 3.46L16 2 12 5.47 8 2l-4.38 1.46.62 2.31L1 8l3 5 2-1 3 6h6l3-6 2 1 3-5-3.24-2.23.62-2.31z"/>
       </svg>
       <h2 class="t-title-ceremonial" style="font-size:16px; white-space:nowrap;">Outfit Items</h2>
-      <span class="help-icon">?<span class="help-tooltip">This panel is the <strong style="color:var(--text)">outfit you are building</strong>. Pick a <strong style="color:var(--text)">category</strong> for it, filter by <strong style="color:var(--text)">slot</strong> if needed, and remove pieces with the <strong style="color:var(--text)">&times;</strong> button on each row.</span></span>
+      <span class="help-icon">?<span class="help-tooltip">This panel is the <strong style="color:var(--text)">outfit you are building</strong>. Select <strong style="color:var(--text)">one or more categories</strong>, filter by <strong style="color:var(--text)">slot</strong> if needed, and remove pieces with the <strong style="color:var(--text)">&times;</strong> button on each row. The same outfit is shared across its categories.</span></span>
     </div>
 
     <div style="padding:16px 20px; flex:1; min-height:0; display:flex; flex-direction:column;">
-      <!-- Category -->
+      <!-- Categories -->
       <div class="t-dropdown" id="createCatDropdown" style="margin-bottom:12px;">
-        <div id="createCatTrigger" class="t-dropdown-trigger" onclick="toggleDropdown('createCatDropdown')">
-          <span id="createCatLabel">Select a category...</span>
+        <button type="button" id="createCatTrigger" class="t-dropdown-trigger" style="width:100%; text-align:left;" onclick="toggleDropdown('createCatDropdown')" aria-controls="createCatList">
+          <span id="createCatLabel">Select categories...</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div id="createCatList" class="t-dropdown-list"></div>
+        </button>
+        <div id="createCatList" class="t-dropdown-list" role="group" aria-label="Outfit categories"></div>
       </div>
 
       <!-- Slot filter -->
@@ -2474,6 +2464,18 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
       </div>
       <div id="npcStageStatus" class="stage-preview-status">Preparing NPC preview...</div>
     </div>
+    <div class="stage-rotation" role="group" aria-label="NPC rotation">
+      <div class="stage-rotation-buttons">
+        <button id="previewRotateLeft" class="t-btn" type="button" aria-label="Rotate left" title="Hold to rotate left" aria-pressed="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a9 9 0 111 8M3 4v6h6"/></svg>
+        </button>
+        <button id="previewRotateReset" class="t-btn" type="button" onclick="resetPreviewRotation()">Reset to Front</button>
+        <button id="previewRotateRight" class="t-btn" type="button" aria-label="Rotate right" title="Hold to rotate right" aria-pressed="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10a9 9 0 10-1 8M21 4v6h-6"/></svg>
+        </button>
+      </div>
+      <div class="stage-rotation-hint">Hold arrows or drag the preview to rotate</div>
+    </div>
   </div>
 
   <!-- RIGHT: the wig side of the court -->
@@ -2514,7 +2516,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-     <span class="footer-ver">v2.3.7</span>
+      <span class="footer-ver">v2.3.8</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -2754,7 +2756,7 @@ var _allOutfits = [];
 var _libCategoryId = 0;
 var _openDropdown = null;
 
-var _createCategoryId = 0;
+var _createCategoryIds = [];
 var _editOutfitId = 0;
 var _armorPlugins = [];
 var _selectedArmorMod = '';
@@ -2764,8 +2766,6 @@ var _selectedSlot = '';
 
 var _allCategoryData = [];
 var _selectedCatId = 0;
-var _femaleCustomCount = 0;
-var _maleCustomCount = 0;
 
 var _blacklistData = [];
 
@@ -3003,8 +3003,13 @@ var _previewViewportFrame = 0;
 var _previewViewportTimers = [];
 var _previewViewportKey = '';
 var _previewTransitionUntil = 0;
+var _previewRotation = {yaw:0, sequence:0, frame:0, pointer:null, source:null,
+  direction:0, lastX:0, lastTime:0, dirty:false};
 
 function tailorSetPreviewOpenGeneration(generation) {
+  stopPreviewRotation();
+  _previewRotation.yaw = 0;
+  _previewRotation.sequence = 0;
   _previewOpenGeneration = Number(generation) || 0;
   _previewViewportKey = '';
 }
@@ -3012,6 +3017,7 @@ function tailorSetPreviewOpenGeneration(generation) {
 function tailorSetPreviewState(data) {
   data = data || {};
   _previewActive = !!data.active;
+  if (!_previewActive) stopPreviewRotation();
   var stage = document.getElementById('dock');
   var status = document.getElementById('npcStageStatus');
   if (stage) stage.classList.toggle('preview-active', _previewActive);
@@ -3060,6 +3066,7 @@ function queuePreviewViewportReport() {
 }
 
 function schedulePreviewViewportReport() {
+  stopPreviewRotation();
   _previewTransitionUntil = performance.now() + 420;
   queuePreviewViewportReport();
   _previewViewportTimers.forEach(clearTimeout);
@@ -3068,10 +3075,110 @@ function schedulePreviewViewportReport() {
   });
 }
 
+function sendPreviewRotation() {
+  if (!_previewRotation.dirty || !_previewActive || !_previewOpenGeneration || !window.tailorPreviewRotate) return;
+  _previewRotation.dirty = false;
+  window.tailorPreviewRotate(JSON.stringify({yaw:_previewRotation.yaw,
+    sequence:++_previewRotation.sequence, openGeneration:_previewOpenGeneration}));
+}
+
+function changePreviewRotation(delta) {
+  var turn = Math.PI * 2;
+  _previewRotation.yaw = ((_previewRotation.yaw + delta + Math.PI) % turn + turn) % turn - Math.PI;
+  _previewRotation.dirty = true;
+}
+
+function previewRotationFrame(now) {
+  _previewRotation.frame = 0;
+  if (!_previewActive || !_previewOpenGeneration || document.hidden) { stopPreviewRotation(); return; }
+  if (_previewRotation.direction) {
+    var seconds = Math.min(0.05, Math.max(0, (now - _previewRotation.lastTime) / 1000));
+    changePreviewRotation(_previewRotation.direction * seconds * Math.PI / 3);
+  }
+  _previewRotation.lastTime = now;
+  sendPreviewRotation();
+  if (_previewRotation.source) _previewRotation.frame = requestAnimationFrame(previewRotationFrame);
+}
+
+function beginPreviewRotation(event, direction) {
+  if (!_previewActive || !_previewOpenGeneration || document.hidden) return;
+  var keyboard = event.type === 'keydown';
+  if (keyboard ? (event.key !== ' ' && event.key !== 'Enter') :
+      (event.button !== 0 || event.isPrimary === false)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (keyboard && event.repeat) return;
+  stopPreviewRotation();
+  var source = event.currentTarget;
+  _previewRotation.pointer = keyboard ? event.key : event.pointerId;
+  _previewRotation.source = source;
+  _previewRotation.direction = direction;
+  _previewRotation.lastX = event.clientX;
+  _previewRotation.lastTime = performance.now();
+  if (!keyboard) source.setPointerCapture(event.pointerId);
+  source.classList.add('holding');
+  if (direction) source.setAttribute('aria-pressed', 'true');
+  document.getElementById('npcStage').classList.add('rotating');
+  _previewRotation.frame = requestAnimationFrame(previewRotationFrame);
+}
+
+function movePreviewRotation(event) {
+  if (_previewRotation.pointer !== event.pointerId || !_previewRotation.source) return;
+  if (event.buttons === 0) { stopPreviewRotation(); return; }
+  if (_previewRotation.direction) return;
+  var width = document.getElementById('npcStage').getBoundingClientRect().width;
+  if (width > 0) changePreviewRotation((event.clientX - _previewRotation.lastX) / width * Math.PI * 2);
+  _previewRotation.lastX = event.clientX;
+  event.preventDefault();
+}
+
+function stopPreviewRotation(event) {
+  if (event && event.pointerId !== undefined && event.pointerId !== _previewRotation.pointer) return;
+  var source = _previewRotation.source, pointer = _previewRotation.pointer;
+  _previewRotation.source = null;
+  _previewRotation.pointer = null;
+  _previewRotation.direction = 0;
+  if (_previewRotation.frame) cancelAnimationFrame(_previewRotation.frame);
+  _previewRotation.frame = 0;
+  sendPreviewRotation();
+  _previewRotation.dirty = false;
+  if (source) {
+    source.classList.remove('holding');
+    source.setAttribute('aria-pressed', 'false');
+    if (typeof pointer === 'number' && source.hasPointerCapture(pointer)) source.releasePointerCapture(pointer);
+  }
+  var viewport = document.getElementById('npcStage');
+  if (viewport) viewport.classList.remove('rotating');
+}
+
+function resetPreviewRotation() {
+  stopPreviewRotation();
+  _previewRotation.yaw = 0;
+  _previewRotation.dirty = true;
+  sendPreviewRotation();
+}
+
 function setupPreviewStage() {
   var viewport = document.getElementById('npcStage');
   if (!viewport) return;
 
+  viewport.addEventListener('pointerdown', function(event) { beginPreviewRotation(event, 0); });
+  viewport.addEventListener('pointermove', movePreviewRotation);
+  viewport.addEventListener('lostpointercapture', stopPreviewRotation);
+  [['previewRotateLeft', -1], ['previewRotateRight', 1]].forEach(function(entry) {
+    var button = document.getElementById(entry[0]);
+    button.addEventListener('pointerdown', function(event) { beginPreviewRotation(event, entry[1]); });
+    button.addEventListener('keydown', function(event) { beginPreviewRotation(event, entry[1]); });
+    button.addEventListener('lostpointercapture', stopPreviewRotation);
+    button.addEventListener('blur', stopPreviewRotation);
+  });
+  window.addEventListener('pointerup', stopPreviewRotation);
+  window.addEventListener('pointercancel', stopPreviewRotation);
+  window.addEventListener('keyup', function(event) {
+    if (event.key === _previewRotation.pointer) { event.preventDefault(); stopPreviewRotation(); }
+  });
+  window.addEventListener('blur', function() { stopPreviewRotation(); });
+  document.addEventListener('visibilitychange', function() { if (document.hidden) stopPreviewRotation(); });
   window.addEventListener('resize', schedulePreviewViewportReport);
   if (window.ResizeObserver) {
     new ResizeObserver(queuePreviewViewportReport).observe(viewport);
@@ -3254,9 +3361,7 @@ function tailorSetCategories(cats) {
   buildLibFilterDropdown();
 
   // Rebuild create-outfit category dropdown
-  buildCategoryDropdown('createCatDropdown', 'createCatList', 'createCatLabel', _createCategoryId, function(id) {
-    _createCategoryId = id;
-  });
+  buildOutfitCategoryDropdown();
 }
 
 var _cycleItems = [];
@@ -3298,28 +3403,26 @@ function tailorSetOutfitData(data) {
   // Populate edit screen with outfit data from C++
   _editOutfitId = data.outfitId || 0;
   _outfitItems = data.items || [];
-  _createCategoryId = data.categoryId || 0;
+  _createCategoryIds = Array.isArray(data.categoryIds) ? data.categoryIds.slice()
+    : (data.categoryId > 0 ? [data.categoryId] : []);
   document.getElementById('createOutfitName').value = data.name || '';
   syncClearBtn('createOutfitName', 'createOutfitNameClear');
   document.getElementById('createPanelTitle').textContent = 'Edit Outfit';
   document.getElementById('createSaveBtn').textContent = 'Save Changes';
   renderOutfitItems();
 
-  // Set category dropdown to outfit's category
-  buildCategoryDropdown('createCatDropdown', 'createCatList', 'createCatLabel', _createCategoryId, function(id) {
-    _createCategoryId = id;
-  });
+  // Keep every membership, including categories absent from an older bridge message.
+  buildOutfitCategoryDropdown();
 }
 
 var _situationPoolsData = [];
 function tailorSetAllCategories(data) {
   _allCategoryData = data.categories || [];
   _situationPoolsData = data.situationPools || [];
-  _femaleCustomCount = data.femaleCustomCount || 0;
-  _maleCustomCount = data.maleCustomCount || 0;
   renderCategoryList();
   renderSituationPools();
-  updateCatSexCount();
+  var count = _allCategoryData.length;
+  document.getElementById('catCustomCount').textContent = count + (count === 1 ? ' custom category' : ' custom categories');
 }
 
 function renderSituationPools() {
@@ -3339,15 +3442,12 @@ function renderSituationPools() {
   section.style.display = '';
   if (customHdr) customHdr.style.display = '';
 
-  // Sort: situation order, then female before male
+  // One combined pool per situation, in priority order.
   var sitOrder = { adventuring:1, town:2, home:3, sleep:4 };
   var sorted = _situationPoolsData.slice().sort(function(a, b) {
     var ao = sitOrder[a.situationType] || 99;
     var bo = sitOrder[b.situationType] || 99;
-    if (ao !== bo) return ao - bo;
-    // female first within the same situation
-    if (a.sex === b.sex) return 0;
-    return a.sex === 'female' ? -1 : 1;
+    return ao - bo;
   });
 
   sorted.forEach(function(cat) {
@@ -3355,13 +3455,6 @@ function renderSituationPools() {
     row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:6px; cursor:default;';
     row.onmouseover = function() { this.style.background = 'rgba(184,115,51,0.06)'; };
     row.onmouseout  = function() { this.style.background = 'transparent'; };
-
-    var sexColor = cat.sex === 'female' ? '#e0a08e' : '#9eb8d9';
-    var sexSymbol = cat.sex === 'female' ? '♀' : '♂';
-    var sexBadge = document.createElement('span');
-    sexBadge.style.cssText = 'display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; font-size:13px; background:' + sexColor + '22; color:' + sexColor + '; flex-shrink:0;';
-    sexBadge.textContent = sexSymbol;
-    row.appendChild(sexBadge);
 
     var nameEl = document.createElement('span');
     nameEl.style.cssText = 'flex:1; font-size:13px; color:var(--fg-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
@@ -3935,20 +4028,13 @@ function buildCategoryButtons() {
     var hasOutfits = cat.outfitCount > 0;
     var tr = document.createElement('tr');
     tr.className = 't-cat-row' + (hasOutfits ? '' : ' disabled');
-    tr.dataset.catName = (cat.name || '').toLowerCase();
-
-    // Determine sex/type display
-    var sexClass, sexLabel;
-    if (cat.situationType)         { sexClass = 'unisex'; sexLabel = 'Any'; }
-    else if (cat.sex === 'female') { sexClass = 'female'; sexLabel = 'Female'; }
-    else if (cat.sex === 'male')   { sexClass = 'male';   sexLabel = 'Male'; }
-    else                           { sexClass = 'unisex'; sexLabel = 'Any'; }
+    tr.dataset.catName = (cat.displayName || cat.name || '').toLowerCase();
 
     // Col 1: name (+ optional sub-label for situation pool)
     var tdName = document.createElement('td');
     var nameEl = document.createElement('div');
     nameEl.className = 't-cat-name';
-    nameEl.textContent = cat.name || '';
+    nameEl.textContent = cat.displayName || cat.name || '';
     tdName.appendChild(nameEl);
     if (cat.situationType) {
       var sub = document.createElement('div');
@@ -3958,22 +4044,13 @@ function buildCategoryButtons() {
     }
     tr.appendChild(tdName);
 
-    // Col 2: sex pill
-    var tdSex = document.createElement('td');
-    tdSex.className = 't-cat-col-sex';
-    var sexPill = document.createElement('span');
-    sexPill.className = 't-cat-sex ' + sexClass;
-    sexPill.textContent = sexLabel;
-    tdSex.appendChild(sexPill);
-    tr.appendChild(tdSex);
-
-    // Col 3: count
+    // Col 2: count
     var tdCount = document.createElement('td');
     tdCount.className = 't-cat-col-count';
     tdCount.textContent = String(cat.outfitCount || 0);
     tr.appendChild(tdCount);
 
-    // Col 4: chevron
+    // Col 3: chevron
     var tdChev = document.createElement('td');
     tdChev.className = 't-cat-col-chev';
     var chev = document.createElement('span');
@@ -3985,7 +4062,7 @@ function buildCategoryButtons() {
     if (hasOutfits) {
       (function(id, name) {
         tr.onclick = function() { startDressing(id, name); };
-      })(cat.id, cat.name);
+      })(cat.id, cat.displayName || cat.name);
     }
 
     tbody.appendChild(tr);
@@ -4012,7 +4089,7 @@ function filterCategoryGrid() {
     var tr = document.createElement('tr');
     tr.className = 't-cat-empty-row';
     var td = document.createElement('td');
-    td.colSpan = 4;
+    td.colSpan = 3;
     td.textContent = query ? ('No categories match "' + query + '"') : 'No categories yet';
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -4139,39 +4216,56 @@ function highlightCycleDropdownItem() {
 //  Library: Category Dropdown
 // ============================================================
 
-function _sexPillHtml(sex) {
-  var cls, label;
-  if (sex === 'female')    { cls = 'female'; label = 'Female'; }
-  else if (sex === 'male') { cls = 'male';   label = 'Male'; }
-  else                     { cls = 'unisex'; label = 'Any'; }
-  return '<span class="t-cat-sex ' + cls + '" style="margin-left:8px;">' + label + '</span>';
+function updateOutfitCategoryLabel() {
+  var count = _createCategoryIds.length;
+  var selected = count === 1 ? _categories.find(function(c) { return c.id === _createCategoryIds[0]; }) : null;
+  document.getElementById('createCatLabel').textContent = selected ? (selected.displayName || selected.name)
+    : (count ? count + (count === 1 ? ' category selected' : ' categories selected') : 'Select categories...');
 }
 
-function buildCategoryDropdown(wrapperId, listId, labelId, selectedId, onSelect) {
-  var list = document.getElementById(listId);
+function buildOutfitCategoryDropdown() {
+  var list = document.getElementById('createCatList');
   list.innerHTML = '';
 
-  // No sex pill here — _categories is already filtered to the current target's sex,
-  // so every row would carry the same pill (redundant noise).
   var sorted = _categories.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
   sorted.forEach(function(cat) {
-    var item = document.createElement('div');
-    item.className = 't-dropdown-item' + (cat.id === selectedId ? ' selected' : '');
-    item.innerHTML = '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(cat.name) + '</span>'
-      + '<span class="item-count">' + cat.outfitCount + '</span>';
-    item.onclick = function() {
-      onSelect(cat.id);
-      document.getElementById(labelId).textContent = cat.name;
-      closeAllDropdowns();
-      buildCategoryDropdown(wrapperId, listId, labelId, cat.id, onSelect);
+    var item = document.createElement('label');
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 't-category-checkbox';
+    checkbox.value = String(cat.id);
+    checkbox.checked = _createCategoryIds.indexOf(cat.id) !== -1;
+    item.className = 't-dropdown-item' + (checkbox.checked ? ' selected' : '');
+    checkbox.onchange = function() {
+      if (checkbox.checked) {
+        if (_createCategoryIds.indexOf(cat.id) === -1) _createCategoryIds.push(cat.id);
+      } else {
+        _createCategoryIds = _createCategoryIds.filter(function(id) { return id !== cat.id; });
+      }
+      item.classList.toggle('selected', checkbox.checked);
+      updateOutfitCategoryLabel();
     };
+    var name = document.createElement('span');
+    name.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    name.textContent = cat.displayName || cat.name;
+    var count = document.createElement('span');
+    count.className = 'item-count';
+    count.textContent = cat.outfitCount;
+    item.appendChild(checkbox);
+    item.appendChild(name);
+    item.appendChild(count);
     list.appendChild(item);
   });
-
-  var selected = _categories.find(function(c) { return c.id === selectedId; });
-  if (selected) {
-    document.getElementById(labelId).textContent = selected.name;
+  var hiddenCount = _createCategoryIds.filter(function(id) {
+    return !_categories.some(function(cat) { return cat.id === id; });
+  }).length;
+  if (hiddenCount) {
+    var note = document.createElement('div');
+    note.className = 't-category-note';
+    note.textContent = hiddenCount + (hiddenCount === 1 ? ' category outside this list remains selected.' : ' categories outside this list remain selected.');
+    list.appendChild(note);
   }
+  updateOutfitCategoryLabel();
 }
 
 function buildLibFilterDropdown() {
@@ -4197,13 +4291,12 @@ function buildLibFilterDropdown() {
     item.className = 't-dropdown-item' + (cat.id === _libCategoryId ? ' selected' : '');
     item.innerHTML =
         '<span style="display:flex; align-items:center; min-width:0; flex:1;">'
-      +   '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(cat.name) + '</span>'
-      +   _sexPillHtml(cat.sex)
+      +   '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(cat.displayName || cat.name) + '</span>'
       + '</span>'
       + '<span class="item-count">' + cat.outfitCount + '</span>';
     item.onclick = function() {
       _libCategoryId = cat.id;
-      document.getElementById('catLabelLib').textContent = cat.name;
+      document.getElementById('catLabelLib').textContent = cat.displayName || cat.name;
       closeAllDropdowns();
       renderLibraryOutfits();
       buildLibFilterDropdown();
@@ -4226,8 +4319,10 @@ function renderLibraryOutfits() {
   var selectedCat = _libCategoryId > 0 ? _categories.find(function(c) { return c.id === _libCategoryId; }) : null;
   var filtered = _allOutfits.filter(function(o) {
     if (query && o.name.toLowerCase().indexOf(query) === -1) return false;
-    if (selectedCat && o.categories && o.categories.indexOf(selectedCat.name) === -1) return false;
-    if (selectedCat && (!o.categories || o.categories.length === 0)) return false;
+    if (selectedCat) {
+      if (Array.isArray(o.categoryIds)) return o.categoryIds.indexOf(selectedCat.id) !== -1;
+      return !!o.categories && o.categories.indexOf(selectedCat.name) !== -1;  // Older native messages.
+    }
     return true;
   }).sort(function(a, b) { return a.name.localeCompare(b.name); });
 
@@ -4310,6 +4405,8 @@ function doCopyOutfit(outfitId, outfitName) {
 
 function openEditOutfit(outfitId) {
   _editOutfitId = outfitId;
+  _createCategoryIds = [];
+  buildOutfitCategoryDropdown();
   _outfitItems = [];
   _selectedArmorMod = '';
   _allModArmor = [];
@@ -4337,7 +4434,7 @@ function openCreateOutfit() {
   _outfitItems = [];
   _selectedArmorMod = '';
   _allModArmor = [];
-  _createCategoryId = 0;
+  _createCategoryIds = [];
   document.getElementById('createOutfitName').value = '';
   document.getElementById('armorModSearch').value = '';
   document.getElementById('armorItemSearch').value = '';
@@ -4345,7 +4442,7 @@ function openCreateOutfit() {
   syncClearBtn('createOutfitName', 'createOutfitNameClear');
   syncClearBtn('armorModSearch', 'armorModSearchClear');
   syncClearBtn('armorItemSearch', 'armorItemSearchClear');
-  document.getElementById('createCatLabel').textContent = 'Select a category...';
+  document.getElementById('createCatLabel').textContent = 'Select categories...';
   document.getElementById('createPanelTitle').textContent = 'Create Outfit';
   document.getElementById('createSaveBtn').textContent = 'Save Outfit';
   document.getElementById('armorBrowserList').innerHTML = '<div style="padding:30px 16px; text-align:center; color:var(--text-dim); font-size:15px;">Search for a mod above</div>';
@@ -4354,9 +4451,7 @@ function openCreateOutfit() {
   window.tailorBeginCreateOutfit('');
   window.tailorRequestArmorPlugins('');
   // Rebuild category dropdown for create screen
-  buildCategoryDropdown('createCatDropdown', 'createCatList', 'createCatLabel', 0, function(id) {
-    _createCategoryId = id;
-  });
+  buildOutfitCategoryDropdown();
 }
 
 function openCategoriesScreen() {
@@ -4541,8 +4636,8 @@ function saveOutfit() {
   var name = document.getElementById('createOutfitName').value.trim();
   if (!name) { document.getElementById('createOutfitName').focus(); return; }
   if (_outfitItems.length === 0) return;
-  if (!_createCategoryId) {
-    showSaveError('Please select a category before saving.');
+  if (_createCategoryIds.length === 0) {
+    showSaveError('Please select at least one category before saving.');
     return;
   }
 
@@ -4551,7 +4646,8 @@ function saveOutfit() {
     window.tailorUpdateOutfit(JSON.stringify({
       outfitId: _editOutfitId,
       name: name,
-      categoryId: _createCategoryId,
+      categoryIds: _createCategoryIds,
+      categoryId: _createCategoryIds[0],  // Fallback for older DLLs; full selection needs the matching DLL.
       items: _outfitItems
     }));
     toast('Outfit updated');
@@ -4559,7 +4655,8 @@ function saveOutfit() {
     // Creating new outfit
     window.tailorSaveOutfit(JSON.stringify({
       name: name,
-      categoryId: _createCategoryId,
+      categoryIds: _createCategoryIds,
+      categoryId: _createCategoryIds[0],
       items: _outfitItems
     }));
     toast('Outfit "' + name + '" saved');
@@ -4593,15 +4690,6 @@ function cancelCreateOutfit() {
 //  Categories Management
 // ============================================================
 
-function updateCatSexCount() {
-  var radio = document.querySelector('input[name="catSex"]:checked');
-  if (!radio) return;
-  var sex = radio.value;
-  var count = sex === 'female' ? _femaleCustomCount : _maleCustomCount;
-  var el = document.getElementById('catSexCount');
-  if (el) el.textContent = count + (count === 1 ? ' custom' : ' custom');
-}
-
 function renderCategoryList() {
   var container = document.getElementById('catList');
   while (container.firstChild) container.removeChild(container.firstChild);
@@ -4616,9 +4704,8 @@ function renderCategoryList() {
     return;
   }
 
-  // Sort alphabetically (case-insensitive), grouped by sex for visual clarity
+  // Sort alphabetically.
   var sorted = _allCategoryData.slice().sort(function(a, b) {
-    if (a.sex !== b.sex) return (a.sex || '').localeCompare(b.sex || '');
     return (a.name || '').localeCompare(b.name || '');
   });
 
@@ -4638,17 +4725,9 @@ function renderCategoryList() {
     row.onmouseover = function() { if (cat.id !== _selectedCatId) { this.style.background = 'rgba(244,235,216,0.04)'; this.style.borderColor = 'rgba(244,235,216,0.06)'; } };
     row.onmouseout  = function() { if (cat.id !== _selectedCatId) { this.style.background = 'transparent'; this.style.borderColor = 'transparent'; } };
 
-    var sexColor = cat.sex === 'female' ? '#e0a08e' : (cat.sex === 'male' ? '#9eb8d9' : 'var(--copper-light)');
-    var sexSymbol = cat.sex === 'female' ? '\u2640' : (cat.sex === 'male' ? '\u2642' : '\u26ab');
-
-    var sexBadge = document.createElement('span');
-    sexBadge.style.cssText = 'display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; font-size:14px; background:' + sexColor + '22; color:' + sexColor + '; flex-shrink:0;';
-    sexBadge.textContent = sexSymbol;
-    row.appendChild(sexBadge);
-
     var nameEl = document.createElement('span');
     nameEl.style.cssText = 'flex:1; font-size:14px; color:var(--fg-1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-    nameEl.textContent = cat.name;
+    nameEl.textContent = cat.displayName || cat.name;
     row.appendChild(nameEl);
 
     var countEl = document.createElement('span');
@@ -4684,17 +4763,14 @@ function selectCategoryForEdit(id) {
   document.getElementById('catEditName').value = cat.name;
   syncClearBtn('catEditName', 'catEditNameClear');
 
-  var sexLabel = cat.sex === 'female' ? 'Female' : 'Male';
-  document.getElementById('catEditInfo').textContent = sexLabel + ' category \u2022 ' + cat.outfitCount + ' outfit(s) assigned';
+  document.getElementById('catEditInfo').textContent = cat.outfitCount + ' outfit(s) assigned';
 }
 
 function doAddCategory() {
   var name = document.getElementById('catNewName').value.trim();
   if (!name) return;
 
-  var sex = document.querySelector('input[name="catSex"]:checked').value;
-
-  window.tailorAddCategory(JSON.stringify({name: name, sex: sex}));
+  window.tailorAddCategory(JSON.stringify({name: name}));
   document.getElementById('catNewName').value = '';
   syncClearBtn('catNewName', 'catNewNameClear');
   toast('Category "' + name + '" created');
@@ -4896,12 +4972,12 @@ function openSitCategoryPicker(situation) {
     btn.className = 't-btn';
     btn.style.cssText = 'width:100%; justify-content:space-between; margin-bottom:4px;'
       + (hasOutfits ? '' : ' opacity:0.35; cursor:default;');
-    btn.innerHTML = '<span>' + escapeHtml(cat.name) + '</span>'
+    btn.innerHTML = '<span>' + escapeHtml(cat.displayName || cat.name) + '</span>'
       + '<span style="font-size:14px; color:var(--text-dim);">' + cat.outfitCount + '</span>';
     if (hasOutfits) {
       (function(id, name) {
         btn.onclick = function() { startSituationCycle(situation, id, name); };
-      })(cat.id, cat.name);
+      })(cat.id, cat.displayName || cat.name);
     } else {
       btn.disabled = true;
     }
@@ -6325,7 +6401,7 @@ function updateDeleteButtonState() {
     'tailorRequestBlacklist','tailorBlacklistPlugin','tailorUnblacklistPlugin','tailorClearBlacklist',
     'tailorRequestSituations','tailorConfirmSituationCycle','tailorClearSituation',
     'tailorClearAllSituations','tailorToggleSituationRandom',
-    'tailorPreviewViewport',
+    'tailorPreviewViewport','tailorPreviewRotate',
     'wiggySelectCategory','wiggyCycleNext','wiggyCyclePrev','wiggyCycleToIndex',
     'wiggyConfirmCycle','wiggyCancelCycle','wiggyResetWig','wiggyRequestMods',
     'wiggyAddWig','wiggyRemoveWig','wiggyMoveWig','wiggyPreviewWig','wiggyEndPreview',
@@ -6340,34 +6416,23 @@ function updateDeleteButtonState() {
 
   // --- 2. Mock data ---
   var MOCK_CATEGORIES = [
-    {id:1,  name:'Heavy Armor',  outfitCount:12, sex:'female', isDefault:true},
-    {id:2,  name:'Light Armor',  outfitCount:8,  sex:'female', isDefault:true},
-    {id:3,  name:'Clothing',     outfitCount:4,  sex:'female', isDefault:true},
-    {id:11, name:'Battle Mage',  outfitCount:6,  sex:'female', isDefault:false},
-    {id:12, name:'Festival',     outfitCount:3,  sex:'female', isDefault:false},
-    {id:13, name:'Tavern Wear',  outfitCount:5,  sex:'female', isDefault:false},
-    {id:14, name:'Stormcloak',   outfitCount:2,  sex:'female', isDefault:false},
-    {id:15, name:'Imperial',     outfitCount:0,  sex:'female', isDefault:false},
-    {id:16, name:'Thieves Guild',outfitCount:7,  sex:'female', isDefault:false},
-    {id:17, name:'Vampire',      outfitCount:4,  sex:'female', isDefault:false},
-    {id:18, name:'Forsworn',     outfitCount:2,  sex:'female', isDefault:false},
-    {id:19, name:'Ceremonial',   outfitCount:1,  sex:'female', isDefault:false},
-    {id:4,  name:'Heavy Armor',  outfitCount:9,  sex:'male',   isDefault:true},
-    {id:5,  name:'Light Armor',  outfitCount:5,  sex:'male',   isDefault:true},
-    {id:6,  name:'Clothing',     outfitCount:3,  sex:'male',   isDefault:true},
-    {id:20, name:'Adventuring',  outfitCount:0,  sex:'female', isDefault:true, situationType:'adventuring'},
-    {id:21, name:'Town',         outfitCount:0,  sex:'female', isDefault:true, situationType:'town'},
-    {id:22, name:'Home',         outfitCount:0,  sex:'female', isDefault:true, situationType:'home'},
-    {id:23, name:'Sleep',        outfitCount:0,  sex:'female', isDefault:true, situationType:'sleep'},
-    {id:24, name:'Adventuring',  outfitCount:0,  sex:'male',   isDefault:true, situationType:'adventuring'},
-    {id:25, name:'Town',         outfitCount:0,  sex:'male',   isDefault:true, situationType:'town'},
-    {id:26, name:'Home',         outfitCount:0,  sex:'male',   isDefault:true, situationType:'home'},
-    {id:27, name:'Sleep',        outfitCount:0,  sex:'male',   isDefault:true, situationType:'sleep'}
+    {id:1,  name:'Heavy Armor',  outfitCount:12, isDefault:true},
+    {id:2,  name:'Light Armor',  outfitCount:8,  isDefault:true},
+    {id:3,  name:'Clothing',     outfitCount:4,  isDefault:true},
+    {id:11, name:'Battle Mage',  outfitCount:6,  isDefault:false},
+    {id:12, name:'Festival',     outfitCount:3,  isDefault:false},
+    {id:13, name:'Tavern Wear',  outfitCount:5,  isDefault:false},
+    {id:14, name:'Stormcloak',   outfitCount:2,  isDefault:false},
+    {id:15, name:'Imperial',     outfitCount:0,  isDefault:false},
+    {id:16, name:'Thieves Guild',outfitCount:7,  isDefault:false},
+    {id:17, name:'Vampire',      outfitCount:4,  isDefault:false},
+    {id:18, name:'Forsworn',     outfitCount:2,  isDefault:false},
+    {id:19, name:'Ceremonial',   outfitCount:1,  isDefault:false},
+    {id:4,  name:'Adventuring',  outfitCount:3,  isDefault:true, situationType:'adventuring'},
+    {id:5,  name:'Town',         outfitCount:2,  isDefault:true, situationType:'town'},
+    {id:6,  name:'Home',         outfitCount:2,  isDefault:true, situationType:'home'},
+    {id:7,  name:'Sleep',        outfitCount:2,  isDefault:true, situationType:'sleep'}
   ];
-  // Visible to a female target (same-sex + situation pool):
-  var MOCK_CATEGORIES_FOR_TARGET = MOCK_CATEGORIES.filter(function(c) {
-    return c.sex === 'female' || c.sex === '';
-  });
 
   var MOCK_OUTFITS = [
     {id:1, name:'Steel Plate Set',     categories:['Heavy Armor'], armorRating:120, hasEnchanted:false},
@@ -6407,13 +6472,13 @@ function updateDeleteButtonState() {
   function bootstrap() {
     try {
       tailorSetTarget({name:'Lydia', sex:'female', currentOutfit:'Steel Plate Set'});
-      tailorSetCategories(MOCK_CATEGORIES_FOR_TARGET);
+      tailorSetCategories(MOCK_CATEGORIES);
       tailorSetAllCategories({
         categories: MOCK_CATEGORIES.filter(function(c) { return !c.isDefault; }),
         situationPools: MOCK_CATEGORIES.filter(function(c) { return c.situationType; }).map(function(c) {
-          return {id:c.id, name:c.name, sex:c.sex, situationType:c.situationType, outfitCount:c.outfitCount};
+          return {id:c.id, name:c.name, situationType:c.situationType, outfitCount:c.outfitCount};
         }),
-        femaleCustomCount: 9, maleCustomCount: 0
+        customCount: 9
       });
       tailorSetOutfits(MOCK_OUTFITS);
       tailorSetCycleState({name:'Steel Plate Set', index:0, total:3, items:MOCK_CYCLE_ITEMS, armorRating:120});

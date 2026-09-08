@@ -32,6 +32,7 @@ namespace Tailor::Preview
         VisibilityLedger<RE::NiPointer<RE::NiAVObject>> _hidden;
         std::unordered_map<RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> _alwaysDraw;
         std::int64_t _nextSweep{0};
+        RE::NiPoint3 _lastCamera{}, _lastApproach{};
         std::uint64_t _worldFeederReculls{0};
         RE::TESObjectCELL* _cell{nullptr}; // identity only, session ends on cell change
         bool _logged{false};

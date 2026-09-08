@@ -123,7 +123,8 @@ void OutfitLibrary::Load()
 
             logger::info("OutfitLibrary: loaded {} categories (nextId={})", _categories.size(), _nextId);
 
-            // Keep existing categories, IDs, memberships and legacy metadata intact.
+            needsMigration = MergeLegacyDefaultCategories();
+
             // Older libraries may lack situations entirely; add one shared pool per missing type.
             auto hasSitCat = [&](const std::string& sitType) {
                 for (auto& cat : _categories) {
@@ -194,6 +195,55 @@ void OutfitLibrary::Save() const
     } catch (const std::exception& e) {
         logger::error("OutfitLibrary: failed to save library.json: {}", e.what());
     }
+}
+
+bool OutfitLibrary::MergeLegacyDefaultCategories()
+{
+    auto merged = _categories;
+    for (std::size_t i = 0; i < merged.size(); ++i) {
+        auto& category = merged[i];
+        if (!category.isDefault || (category.sex != "female" && category.sex != "male")) continue;
+
+        const auto partner = std::find_if(merged.begin() + i + 1, merged.end(),
+            [&](const OutfitCategory& other) {
+                return other.isDefault && other.name == category.name &&
+                    other.situationType == category.situationType &&
+                    other.sex == (category.sex == "female" ? "male" : "female");
+            });
+        if (partner == merged.end()) continue;
+
+        std::vector<int> outfitIds;
+        for (const auto* ids : {&category.outfitIds, &partner->outfitIds}) {
+            for (int id : *ids) {
+                if (std::find(outfitIds.begin(), outfitIds.end(), id) == outfitIds.end()) {
+                    outfitIds.push_back(id);
+                }
+            }
+        }
+        category.outfitIds = std::move(outfitIds);
+        category.sex.clear();
+        merged.erase(partner);
+    }
+    if (merged.size() == _categories.size()) return false;
+
+    // Preserve the exact input before any migration write. A later import of another
+    // legacy library gets its own backup; never overwrite an earlier backup.
+    const auto path = GetLibraryPath();
+    auto backup = path.parent_path() / "library.pre-unisex-defaults.json";
+    for (int suffix = 1; std::filesystem::exists(backup); ++suffix) {
+        backup = path.parent_path() / ("library.pre-unisex-defaults." + std::to_string(suffix) + ".json");
+    }
+    std::error_code error;
+    if (!std::filesystem::copy_file(path, backup, std::filesystem::copy_options::none, error)) {
+        logger::error("OutfitLibrary: default-category migration skipped; backup failed: {}", error.message());
+        return false;
+    }
+
+    logger::info("OutfitLibrary: merged {} legacy default category pairs; original library backed up to {}",
+        _categories.size() - merged.size(), backup.string());
+    _categories = std::move(merged);
+    // Outfit IDs and _nextId are unchanged. Assignments reference outfits, not categories.
+    return true;
 }
 
 // --- Category accessors ---

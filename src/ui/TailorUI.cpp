@@ -1143,12 +1143,13 @@ void TailorUI::Initialize()
                 auto& mgr = WigManager::GetSingleton();
                 auto* target = mgr.GetTarget();
                 if (target) {
-                    mgr.ApplyHairColor(target,
+                    if (!mgr.ConfirmHairColor(target,
                         static_cast<uint8_t>(r),
                         static_cast<uint8_t>(g),
-                        static_cast<uint8_t>(b));
-                    WigAssignments::GetSingleton().SetHairColor(target->GetFormID(), r, g, b);
-                    WigAssignments::GetSingleton().Save();
+                        static_cast<uint8_t>(b))) {
+                        TailorUI::GetSingleton().SendHairColorState();
+                        return;
+                    }
                     // Heal any neighbour still sharing a hair material bled by an older build.
                     mgr.RetintNearbyActors(target);
                     logger::info("Confirmed hair color ({}, {}, {}) for {}",

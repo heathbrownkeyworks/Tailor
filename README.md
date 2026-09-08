@@ -4,18 +4,20 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.3.8**
+Current source version: **2.4.0**
 
-## Changes in 2.3.8
+## Changes from 2.3.7 to 2.4.0
 
-- Recover assigned wigs after follower dismissal and external equipment removal.
-- Slow the game timescale to 1 while Tailor is open and restore it on closing.
-- Place an outfit in multiple categories while preserving existing libraries and assignments.
-- Use any outfit with either NPC sex; wig categories keep their existing behavior.
-- Return to the generic assigned outfit when a situational outfit no longer applies.
-- Detect sleep entry and waking through the game's sleep state, including alternate sleep idles.
-- Rotate the preview camera by holding the controls or dragging, and reset it to the front.
-- Keep NPC movement held during preview while preserving behavior and animation processing.
+- Outfits can belong to multiple categories.
+- Outfit categories work with both male and female NPCs.
+- Duplicate legacy default categories are combined while preserving existing outfits and assignments.
+- Improved wig retention when followers are dismissed or equipment is reset.
+- Faster wig recovery after magic effects and stripping events.
+- Fixed hair color tiles sometimes requiring a second click.
+- NPCs return to their regular outfit after situational outfits end.
+- Sleep outfits apply earlier when NPCs enter bed and support alternate sleep animations.
+- Slows in-game time while Tailor is open and restores the original timescale on exit.
+- Improved preview rotation, camera restoration and NPC movement handling.
 
 ## Features
 
@@ -47,8 +49,8 @@ OBody NG and SmoothCam are optional integrations. Tailor continues without
 them.
 
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
-The 2.3.8 source has passed native builds and automated checks. Gameplay testing
-of these changes is pending; runtimes and renderer configurations need separate testing.
+The 2.4.0 release has passed native builds and automated checks. Gameplay testing
+was reported successful for the tested configuration.
 
 ## Building
 

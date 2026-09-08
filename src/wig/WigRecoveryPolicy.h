@@ -50,11 +50,19 @@ namespace Tailor::Wigs
 
         std::optional<Request> Queue(std::uint32_t actorId, std::uint32_t wigFormId)
         {
-            if (!_enabled || actorId == 0 || wigFormId == 0 ||
-                _changes.contains(actorId) || _pending.contains(actorId)) return std::nullopt;
+            if (QueueBlockReason(actorId, wigFormId)) return std::nullopt;
             const Request request{actorId, wigFormId, ++_nextToken};
             _pending.emplace(actorId, request);
             return request;
+        }
+
+        const char* QueueBlockReason(std::uint32_t actorId, std::uint32_t wigFormId) const
+        {
+            if (!_enabled) return "recovery disabled";
+            if (actorId == 0 || wigFormId == 0) return "invalid actor/wig";
+            if (_changes.contains(actorId)) return "Tailor changing wig";
+            if (_pending.contains(actorId)) return "recovery already pending";
+            return nullptr;
         }
 
         bool IsCurrent(const Request& request) const

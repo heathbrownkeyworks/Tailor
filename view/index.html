@@ -2516,7 +2516,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-      <span class="footer-ver">v2.3.8</span>
+      <span class="footer-ver">v2.4.0</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -5922,7 +5922,6 @@ function showActiveColorName() {
 
 function selectHairColorPreset(preset) {
   wigActiveHairColor = {r: preset.r, g: preset.g, b: preset.b};
-  window.wiggyApplyHairColor(JSON.stringify({r: preset.r, g: preset.g, b: preset.b}));
   window.wiggyConfirmHairColor(JSON.stringify({r: preset.r, g: preset.g, b: preset.b}));
   updateHairColorStatus();
   renderHairColorGrid();

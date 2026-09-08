@@ -4,6 +4,7 @@
 #include "outfit/OutfitManager.h"
 #include "outfit/OutfitStore.h"
 #include "wig/WigAssignments.h"
+#include "wig/WigEquipment.h"
 #include "wig/WigManager.h"
 
 #include <atomic>
@@ -178,9 +179,7 @@ namespace
                     WigManager::EnsureArmorAddonRace(armor, npc->GetRace(), npc->GetSex());
                 }
 
-                auto* equipManager = RE::ActorEquipManager::GetSingleton();
-                if (equipManager) {
-                    equipManager->EquipObject(actor, armor, nullptr, 1, nullptr, true, false, false, false);
+                if (Tailor::Wigs::EquipProtectedWig(actor, armor)) {
                     logger::info("CellHandler: re-equipped wig '{}' on {} (frame {})",
                         state->currentWig.name, actor->GetDisplayFullName(), attempt);
                 }

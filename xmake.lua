@@ -2,7 +2,7 @@ set_xmakever('3.0.1')
 includes('lib/commonlibsse-ng')
 
 set_project('Tailor')
-set_version('2.3.8')
+set_version('2.4.0')
 set_license('MIT')
 
 set_languages('c++23')

@@ -96,6 +96,7 @@ public:
     void ReEquipWigAfterOutfitChange(RE::Actor* actor);
 
     // Hair color operations
+    bool ConfirmHairColor(RE::Actor* actor, uint8_t r, uint8_t g, uint8_t b);
     bool ApplyHairColor(RE::Actor* actor, uint8_t r, uint8_t g, uint8_t b);
     bool ResetHairColor(RE::Actor* actor);
     void ReApplyHairColor(RE::Actor* actor);
@@ -129,7 +130,7 @@ private:
         RE::BSTEventSource<RE::TESEquipEvent>*) override;
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* event,
         RE::BSTEventSource<RE::TESContainerChangedEvent>*) override;
-    void QueueWigRecovery(RE::Actor* actor, RE::FormID changedArmorId);
+    void QueueWigRecovery(RE::Actor* actor, RE::FormID changedArmorId, const char* eventName);
     void RecoverWig(RE::ActorHandle handle, Tailor::Wigs::WigRecoveryPolicy::Request request);
 
     // Resolve the per-actor hair tint: custom color if set, else the NPC's natural

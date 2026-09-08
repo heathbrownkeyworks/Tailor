@@ -39,6 +39,7 @@ private:
 
     std::filesystem::path GetLibraryPath() const;
     void CreateDefaults();
+    bool MergeLegacyDefaultCategories();  // Caller holds _mutex; backs up before migration.
 
     std::vector<OutfitCategory> _categories;
     int                         _nextId = 1;

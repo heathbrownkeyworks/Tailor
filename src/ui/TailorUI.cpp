@@ -4,6 +4,7 @@
 #include "outfit/OutfitAssignments.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
+#include "outfit/OutfitTransfer.h"
 #include "preview/TailorPreviewSession.h"
 #include "wig/CustomColorLibrary.h"
 #include "wig/WigAssignments.h"
@@ -190,8 +191,15 @@ void TailorUI::Initialize()
             try {
                 auto json = nlohmann::json::parse(d);
                 int id = json.value("id", 0);
-                OutfitManager::GetSingleton().StartCycle(id);
-                TailorUI::GetSingleton().SendCycleState();
+                const int situation = json.value("situation", 0);
+                if (situation < 0 || situation > 4) return;
+                auto& ui = TailorUI::GetSingleton();
+                if (OutfitManager::GetSingleton().StartCycle(id, static_cast<OutfitSituation>(situation))) {
+                    ui.SendCycleState();
+                } else {
+                    ui.SendSituationData();
+                    g_MeridianView->ExecuteJavaScript(ui._view, "tailorCycleUnavailable()");
+                }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorSelectCategory: {}", e.what());
             }
@@ -252,6 +260,56 @@ void TailorUI::Initialize()
                 mgr.ResetOutfit(target);
                 TailorUI::GetSingleton().SendTargetUpdate();
             }
+        });
+    });
+
+    g_MeridianView->RegisterListener(_view, "tailorRequestTransferData", [](const char*) {
+        SKSE::GetTaskInterface()->AddTask([]() {
+            auto& ui = TailorUI::GetSingleton();
+            if (ui.IsOpen()) ui.SendTransferData();
+        });
+    });
+    g_MeridianView->RegisterListener(_view, "tailorExportOutfits", [](const char* arg) {
+        SKSE::GetTaskInterface()->AddTask([payload = std::string(arg)]() {
+            auto& ui = TailorUI::GetSingleton();
+            if (!ui.IsOpen()) return;
+            nlohmann::json result;
+            try {
+                const auto json = nlohmann::json::parse(payload);
+                std::vector<int> ids;
+                if (!json.at("outfitIds").is_array()) throw std::invalid_argument("Invalid outfit selection.");
+                for (const auto& id : json.at("outfitIds")) {
+                    if (!id.is_number_integer() || id <= 0 || id > (std::numeric_limits<int>::max)()) throw std::invalid_argument("Invalid outfit selection.");
+                    ids.push_back(id.get<int>());
+                }
+                result = OutfitTransfer::Export(json.at("name").get<std::string>(), ids);
+            } catch (const std::exception& error) {
+                logger::warn("Outfit export failed: {}", error.what());
+                result = {{"ok", false}, {"operation", "export"}, {"error", error.what()}};
+            }
+            const auto js = std::format("tailorTransferResult({})", result.dump());
+            g_MeridianView->ExecuteJavaScript(ui._view, js.c_str());
+            ui.SendTransferData();
+        });
+    });
+    g_MeridianView->RegisterListener(_view, "tailorImportOutfits", [](const char* arg) {
+        SKSE::GetTaskInterface()->AddTask([payload = std::string(arg)]() {
+            auto& ui = TailorUI::GetSingleton();
+            if (!ui.IsOpen()) return;
+            nlohmann::json result;
+            try {
+                const auto json = nlohmann::json::parse(payload);
+                result = OutfitTransfer::Import(json.at("file").get<std::string>());
+                ui.SendOutfits();
+                ui.SendCategories();
+                ui.SendSituationData();
+            } catch (const std::exception& error) {
+                logger::warn("Outfit import failed: {}", error.what());
+                result = {{"ok", false}, {"operation", "import"}, {"error", error.what()}};
+            }
+            const auto js = std::format("tailorTransferResult({})", result.dump());
+            g_MeridianView->ExecuteJavaScript(ui._view, js.c_str());
+            ui.SendTransferData();
         });
     });
 
@@ -464,12 +522,7 @@ void TailorUI::Initialize()
                     lib.SetOutfitCategories(outfitId, categoryIds);
                     lib.Save();
 
-                    auto& mgr = OutfitManager::GetSingleton();
-                    auto* target = mgr.GetTarget();
-                    if (target) {
-                        mgr.EndCreateOutfit(target);
-                        TailorUI::GetSingleton().RestoreCorrectOutfit(target);
-                    }
+                    OutfitManager::GetSingleton().EndCreateOutfit();
 
                     TailorUI::GetSingleton().SendOutfits();
                     TailorUI::GetSingleton().SendCategories();
@@ -485,12 +538,7 @@ void TailorUI::Initialize()
     // 18. tailorCancelCreateOutfit
     g_MeridianView->RegisterListener(_view, "tailorCancelCreateOutfit", [](const char*) {
         SKSE::GetTaskInterface()->AddTask([]() {
-            auto& mgr = OutfitManager::GetSingleton();
-            auto* target = mgr.GetTarget();
-            if (target) {
-                mgr.EndCreateOutfit(target);
-                TailorUI::GetSingleton().RestoreCorrectOutfit(target);
-            }
+            OutfitManager::GetSingleton().EndCreateOutfit();
         });
     });
 
@@ -519,6 +567,26 @@ void TailorUI::Initialize()
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorRequestOutfitData: {}", e.what());
+            }
+        });
+    });
+
+    // Manage Outfits row preview uses the same temporary session and cleanup as
+    // the editor, without populating editor fields or saving an assignment.
+    g_MeridianView->RegisterListener(_view, "tailorPreviewOutfit", [](const char* arg) {
+        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+            if (!TailorUI::GetSingleton().IsOpen()) return;
+            try {
+                const auto json = nlohmann::json::parse(d);
+                const int outfitId = json.value("outfitId", 0);
+                auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
+                auto& mgr = OutfitManager::GetSingleton();
+                auto* target = mgr.GetTarget();
+                if (outfit && target) {
+                    mgr.LoadCreateOutfitItems(target, outfit->items);
+                }
+            } catch (const nlohmann::json::exception& e) {
+                logger::error("tailorPreviewOutfit: {}", e.what());
             }
         });
     });
@@ -552,12 +620,7 @@ void TailorUI::Initialize()
                     lib.SetOutfitCategories(outfitId, categoryIds);
                     lib.Save();
 
-                    auto& mgr = OutfitManager::GetSingleton();
-                    auto* target = mgr.GetTarget();
-                    if (target) {
-                        mgr.EndCreateOutfit(target);
-                        TailorUI::GetSingleton().RestoreCorrectOutfit(target);
-                    }
+                    OutfitManager::GetSingleton().EndCreateOutfit();
 
                     TailorUI::GetSingleton().SendOutfits();
                     TailorUI::GetSingleton().SendCategories();
@@ -694,6 +757,31 @@ void TailorUI::Initialize()
         });
     });
 
+    g_MeridianView->RegisterListener(_view, "tailorSetAdventuringArmorType", [](const char* arg) {
+        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+            auto& ui = TailorUI::GetSingleton();
+            if (!ui.IsOpen()) return;
+            try {
+                const auto json = nlohmann::json::parse(d);
+                const auto value = json.value("armorType", std::string{});
+                const auto type = ParseOutfitArmorType(value);
+                if (value != OutfitArmorTypeName(type)) throw std::invalid_argument("Unknown armor type");
+                if (auto* target = OutfitManager::GetSingleton().GetTarget()) {
+                    auto& assignments = OutfitAssignments::GetSingleton();
+                    assignments.SetAdventuringArmorType(target->GetFormID(), type);
+                    assignments.Save();
+                    if (assignments.HasAnySituation(target->GetFormID())) {
+                        SituationHandler::GetSingleton()->ForceApplyForSituation(target);
+                    }
+                }
+            } catch (const std::exception& e) {
+                logger::error("tailorSetAdventuringArmorType: {}", e.what());
+            }
+            ui.SendSituationData();
+            ui.SendTargetUpdate();
+        });
+    });
+
     // 31. tailorConfirmSituationCycle
     g_MeridianView->RegisterListener(_view, "tailorConfirmSituationCycle", [](const char* arg) {
         SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
@@ -730,7 +818,7 @@ void TailorUI::Initialize()
                 if (target && sit >= 1 && sit <= 4) {
                     auto& assignments = OutfitAssignments::GetSingleton();
                     const auto* saved = assignments.GetAssignment(target->GetFormID());
-                    if (!saved) return;
+                    if (!saved || !saved->HasOutfits()) return;
                     auto remaining = *saved;
                     remaining.ClearSlot(static_cast<OutfitSituation>(sit));
                     if (remaining.outfitId <= 0 && !remaining.HasAnySituation()) {
@@ -783,7 +871,7 @@ void TailorUI::Initialize()
                 if (target && sit >= 1 && sit <= 4) {
                     auto& assignments = OutfitAssignments::GetSingleton();
                     const auto* saved = assignments.GetAssignment(target->GetFormID());
-                    if (!saved && !random) return;
+                    if ((!saved || !saved->HasOutfits()) && !random) return;
                     auto remaining = saved ? *saved : SituationalAssignment{};
                     remaining.SetRandomFlag(static_cast<OutfitSituation>(sit), random);
                     if (remaining.outfitId <= 0 && !remaining.HasAnySituation()) {
@@ -1443,8 +1531,11 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
     // Cancel outfit cycling or create-outfit preview
     auto& outfitMgr = OutfitManager::GetSingleton();
     outfitMgr.CancelCycle();
-    if (auto* target = outfitMgr.GetTarget()) {
-        outfitMgr.EndCreateOutfit(target);
+    // PrepareForGameLoad restores captured pointers without equipment/morph
+    // work when the world is about to be reverted.
+    if (reason != Tailor::Preview::EndReason::PreLoadGame &&
+        reason != Tailor::Preview::EndReason::NewGame) {
+        outfitMgr.EndCreateOutfit();
     }
 
     // Cancel wig cycling/preview — EquipWig/RemoveCurrentWig reconcile the
@@ -1533,11 +1624,7 @@ void TailorUI::SendTargetUpdate()
         if (assignment) {
             // Check situational outfit first, then Adventuring and generic fallbacks.
             auto situation = SituationHandler::GetSingleton()->EvaluateSituation(target);
-            int outfitId = assignment->GetSlot(situation);
-            if (outfitId <= 0)
-                outfitId = assignment->adventuringId;
-            if (outfitId <= 0)
-                outfitId = assignment->outfitId;
+            const int outfitId = SituationHandler::GetSingleton()->ResolveOutfitForSituation(target->GetFormID(), situation);
             if (outfitId > 0) {
                 auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
                 if (outfit) currentOutfit = outfit->name;
@@ -1564,6 +1651,7 @@ void TailorUI::SendCategories()
             {"name", cat.name},
             {"displayName", lib.GetCategoryDisplayName(cat.id)},
             {"situationType", cat.situationType},
+            {"armorType", OutfitArmorTypeName(cat.armorType)},
             {"outfitCount", static_cast<int>(cat.outfitIds.size())},
             {"isDefault", cat.isDefault}
         });
@@ -1631,6 +1719,19 @@ void TailorUI::SendCycleState()
     data["items"] = items;
 
     std::string js = std::format("tailorSetCycleState({})", data.dump());
+    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+}
+
+void TailorUI::SendTransferData()
+{
+    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
+    nlohmann::json data;
+    try {
+        data = {{"outfits", OutfitTransfer::Catalog()}, {"files", OutfitTransfer::ListFiles()}};
+    } catch (const std::exception& error) {
+        data = {{"outfits", nlohmann::json::array()}, {"files", nlohmann::json::array()}, {"error", error.what()}};
+    }
+    const auto js = std::format("tailorSetTransferData({})", data.dump());
     g_MeridianView->ExecuteJavaScript(_view, js.c_str());
 }
 
@@ -1915,7 +2016,24 @@ void TailorUI::SendSituationData()
     auto getCatCount = [&](const std::string& sitType) -> int {
         return static_cast<int>(lib.GetSituationOutfitIds(sitType).size());
     };
-    data["adventuringCatCount"] = getCatCount("adventuring");
+    const auto armorType = sa ? sa->adventuringArmorType : OutfitArmorType::Any;
+    data["adventuringArmorType"] = OutfitArmorTypeName(armorType);
+    auto matchingCount = [&](const std::vector<int>& ids) {
+        auto matching = lib.FilterByArmorType(ids, armorType);
+        std::erase_if(matching, [&](int id) { return !store.GetOutfitById(id); });
+        return matching.size();
+    };
+    data["adventuringCatCount"] = matchingCount(lib.GetSituationOutfitIds("adventuring"));
+    data["adventuringAssignedCompatible"] = !sa || sa->adventuringId <= 0 ||
+        (store.GetOutfitById(sa->adventuringId) && lib.MatchesArmorType(sa->adventuringId, armorType));
+    data["adventuringCategoryCounts"] = nlohmann::json::object();
+    bool hasDressOptions = false;
+    for (const auto& category : lib.GetCategories()) {
+        const auto count = matchingCount(category.outfitIds);
+        data["adventuringCategoryCounts"][std::to_string(category.id)] = count;
+        hasDressOptions = hasDressOptions || count > 0;
+    }
+    data["adventuringHasDressOptions"] = hasDressOptions;
     data["townCatCount"] = getCatCount("town");
     data["homeCatCount"] = getCatCount("home");
     data["sleepCatCount"] = getCatCount("sleep");
@@ -1942,30 +2060,6 @@ void TailorUI::SendOutfitUsage(int outfitId)
 
     std::string js = std::format("tailorSetOutfitUsage({})", data.dump());
     g_MeridianView->ExecuteJavaScript(_view, js.c_str());
-}
-
-void TailorUI::RestoreCorrectOutfit(RE::Actor* actor)
-{
-    if (!actor) return;
-
-    auto& assignments = OutfitAssignments::GetSingleton();
-    auto actorId = actor->GetFormID();
-
-    if (assignments.HasAnySituation(actorId)) {
-        SituationHandler::GetSingleton()->ForceApplyForSituation(actor);
-        return;
-    }
-
-    int outfitId = assignments.GetOutfitId(actorId);
-    if (outfitId > 0) {
-        auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
-        if (outfit) {
-            OutfitManager::GetSingleton().ApplyCustomOutfit(actor, *outfit);
-            return;
-        }
-    }
-
-    logger::info("RestoreCorrectOutfit: {} has no assignment, vanilla outfit restored", actor->GetDisplayFullName());
 }
 
 // ================================================================

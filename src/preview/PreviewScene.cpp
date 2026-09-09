@@ -132,6 +132,20 @@ namespace Tailor::Preview
         }
     }
 
+    void PreviewScene::ReleaseDetachedDrawNodes()
+    {
+        // Outfit updates can detach armor roots or individual partitions. Drop
+        // our draw override and reference once a node leaves the current actor
+        // or stage, rather than retaining every previewed mesh until close.
+        const auto released = std::erase_if(_alwaysDraw, [&](const auto& entry) {
+            auto* node = entry.first;
+            if (AncestorOrSelf(_actorRoot.get(), node) || AncestorOrSelf(_stage.get(), node)) return false;
+            node->GetFlags().reset(RE::NiAVObject::Flag::kAlwaysDraw);
+            return true;
+        });
+        if (released) logger::info("Tailor preview: released {} detached draw nodes", released);
+    }
+
     void PreviewScene::Sweep(RE::Actor* actor)
     {
         HideBranch(_scene.get());
@@ -286,6 +300,7 @@ namespace Tailor::Preview
         const bool rebuilt = root != _actorRoot.get();
         _actorRoot.reset(root);
         if (!Fit(camera, approach, center, distance, fov)) return false;
+        ReleaseDetachedDrawNodes();
         // Leave scene/sky fog to Skyrim. The frame probe found scene fog reset
         // before every tick; CursorMenu must not compete with those updates.
         HideWorldFeeders();

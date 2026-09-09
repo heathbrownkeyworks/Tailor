@@ -14,6 +14,7 @@ struct CycleState
 {
     WigCategory category;
     int32_t     index = 0;
+    std::vector<WigEntry> wigs;
     WigEntry    originalWig;
     bool        hadOriginal = false;
 };

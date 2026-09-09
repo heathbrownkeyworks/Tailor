@@ -18,6 +18,8 @@ public:
     const OutfitCategory* GetCategoryById(int id) const;
     // Combine legacy and new pools, with each outfit ID represented once.
     std::vector<int> GetSituationOutfitIds(const std::string& sitType) const;
+    std::vector<int> FilterByArmorType(const std::vector<int>& outfitIds, OutfitArmorType type) const;
+    bool MatchesArmorType(int outfitId, OutfitArmorType type) const;
 
     int  AddCategory(const std::string& name);
     bool RenameCategory(int id, const std::string& newName);
@@ -33,6 +35,8 @@ public:
     void RemoveOutfitFromAllCategories(int outfitId);
 
 private:
+    friend class OutfitTransfer;
+    static std::string Serialize(const std::vector<OutfitCategory>& categories, int nextId);
     OutfitLibrary() = default;
     OutfitLibrary(const OutfitLibrary&) = delete;
     OutfitLibrary& operator=(const OutfitLibrary&) = delete;

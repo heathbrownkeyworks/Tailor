@@ -1,4 +1,3 @@
-#include "pch.h"
 #include "outfit/OutfitAssignments.h"
 
 namespace
@@ -102,13 +101,16 @@ void OutfitAssignments::Load()
                 bool townRandom = entry.value("townRandom", false);
                 bool homeRandom = entry.value("homeRandom", false);
                 bool sleepRandom = entry.value("sleepRandom", false);
+                const auto armorType = entry.contains("adventuringArmorType") && entry["adventuringArmorType"].is_string()
+                    ? ParseOutfitArmorType(entry["adventuringArmorType"].get<std::string>()) : OutfitArmorType::Any;
 
                 if (actorFormStr.empty() || actorPlugin.empty()) {
                     needsPrune = true;
                     continue;
                 }
                 if (outfitId <= 0 && adventuringId <= 0 && townId <= 0 && homeId <= 0 && sleepId <= 0
-                    && !adventuringRandom && !townRandom && !homeRandom && !sleepRandom) {
+                    && !adventuringRandom && !townRandom && !homeRandom && !sleepRandom
+                    && armorType == OutfitArmorType::Any) {
                     needsPrune = true;
                     continue;
                 }
@@ -134,6 +136,7 @@ void OutfitAssignments::Load()
                 sa.townRandom = townRandom;
                 sa.homeRandom = homeRandom;
                 sa.sleepRandom = sleepRandom;
+                sa.adventuringArmorType = armorType;
                 sa.originalOutfitPlugin = entry.value("originalOutfitPlugin", std::string{});
                 sa.originalOutfitLocalId = entry.value("originalOutfitLocalId", std::string{});
                 sa.originalSleepOutfitPlugin = entry.value("originalSleepOutfitPlugin", std::string{});
@@ -196,8 +199,7 @@ void OutfitAssignments::Save() const
     json["assignments"] = nlohmann::json::array();
 
     for (auto& [runtimeId, sa] : _assignments) {
-        // Skip empty entries (no outfit, no situations)
-        if (sa.outfitId <= 0 && !sa.HasAnySituation()) continue;
+        if (!sa.HasSettings()) continue;
 
         auto* form = RE::TESForm::LookupByID(runtimeId);
         if (!form) continue;
@@ -237,6 +239,9 @@ void OutfitAssignments::Save() const
         if (sa.townRandom) entry["townRandom"] = true;
         if (sa.homeRandom) entry["homeRandom"] = true;
         if (sa.sleepRandom) entry["sleepRandom"] = true;
+        if (sa.adventuringArmorType != OutfitArmorType::Any) {
+            entry["adventuringArmorType"] = OutfitArmorTypeName(sa.adventuringArmorType);
+        }
         if (!sa.originalOutfitPlugin.empty()) entry["originalOutfitPlugin"] = sa.originalOutfitPlugin;
         if (!sa.originalOutfitLocalId.empty()) entry["originalOutfitLocalId"] = sa.originalOutfitLocalId;
         if (!sa.originalSleepOutfitPlugin.empty()) entry["originalSleepOutfitPlugin"] = sa.originalSleepOutfitPlugin;
@@ -282,14 +287,22 @@ void OutfitAssignments::Assign(RE::FormID actorRuntimeId, int outfitId)
 void OutfitAssignments::Unassign(RE::FormID actorRuntimeId)
 {
     std::lock_guard lock(_mutex);
-    _assignments.erase(actorRuntimeId);
+    auto it = _assignments.find(actorRuntimeId);
+    if (it != _assignments.end() && it->second.adventuringArmorType != OutfitArmorType::Any) {
+        const auto type = it->second.adventuringArmorType;
+        it->second = {};
+        it->second.adventuringArmorType = type;
+    } else {
+        _assignments.erase(actorRuntimeId);
+    }
     logger::info("OutfitAssignments: unassigned actor 0x{:X}", actorRuntimeId);
 }
 
 bool OutfitAssignments::HasAssignment(RE::FormID actorRuntimeId) const
 {
     std::lock_guard lock(_mutex);
-    return _assignments.contains(actorRuntimeId);
+    const auto it = _assignments.find(actorRuntimeId);
+    return it != _assignments.end() && it->second.HasOutfits();
 }
 
 int OutfitAssignments::GetOutfitId(RE::FormID actorRuntimeId) const
@@ -302,7 +315,9 @@ int OutfitAssignments::GetOutfitId(RE::FormID actorRuntimeId) const
 std::unordered_map<RE::FormID, SituationalAssignment> OutfitAssignments::GetAll() const
 {
     std::lock_guard lock(_mutex);
-    return _assignments;
+    auto active = _assignments;
+    std::erase_if(active, [](const auto& entry) { return !entry.second.HasOutfits(); });
+    return active;
 }
 
 void OutfitAssignments::AssignSituation(RE::FormID actorRuntimeId, OutfitSituation situation, int outfitId)
@@ -374,6 +389,21 @@ const SituationalAssignment* OutfitAssignments::GetAssignment(RE::FormID actorRu
     return it != _assignments.end() ? &it->second : nullptr;
 }
 
+void OutfitAssignments::SetAdventuringArmorType(RE::FormID actorRuntimeId, OutfitArmorType type)
+{
+    std::lock_guard lock(_mutex);
+    auto& state = _assignments[actorRuntimeId];
+    state.adventuringArmorType = type;
+    if (!state.HasSettings()) _assignments.erase(actorRuntimeId);
+}
+
+OutfitArmorType OutfitAssignments::GetAdventuringArmorType(RE::FormID actorRuntimeId) const
+{
+    std::lock_guard lock(_mutex);
+    const auto it = _assignments.find(actorRuntimeId);
+    return it == _assignments.end() ? OutfitArmorType::Any : it->second.adventuringArmorType;
+}
+
 std::vector<RE::FormID> OutfitAssignments::GetActorsUsingOutfit(int outfitId) const
 {
     std::lock_guard lock(_mutex);
@@ -402,7 +432,7 @@ void OutfitAssignments::RemoveOutfitFromAllAssignments(int outfitId)
             if (sa.homeId == outfitId) sa.homeId = 0;
             if (sa.sleepId == outfitId) sa.sleepId = 0;
 
-            if (sa.outfitId <= 0 && !sa.HasAnySituation()) {
+            if (!sa.HasSettings()) {
                 it = _assignments.erase(it);
             } else {
                 ++it;

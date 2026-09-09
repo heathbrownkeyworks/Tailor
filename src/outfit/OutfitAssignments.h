@@ -6,6 +6,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "outfit/OutfitArmorType.h"
 
 enum class OutfitSituation : int { Adventuring = 1, Town = 2, Home = 3, Sleep = 4 };
 
@@ -21,6 +22,7 @@ struct SituationalAssignment {
     bool townRandom = false;
     bool homeRandom = false;
     bool sleepRandom = false;
+    OutfitArmorType adventuringArmorType = OutfitArmorType::Any;
 
     // Original outfit before Tailor modification (for Default Outfit restore)
     std::string originalOutfitPlugin;
@@ -41,16 +43,25 @@ struct SituationalAssignment {
             || adventuringRandom || townRandom || homeRandom || sleepRandom;
     }
 
-    template <class RandomResolver>
-    int ResolveOutfit(OutfitSituation situation, RandomResolver&& resolveRandom) const {
+    bool HasOutfits() const { return outfitId > 0 || HasAnySituation(); }
+    bool HasSettings() const { return HasOutfits() || adventuringArmorType != OutfitArmorType::Any; }
+
+    template <class RandomResolver, class AdventuringFilter>
+    int ResolveOutfit(OutfitSituation situation, RandomResolver&& resolveRandom, AdventuringFilter&& allowed) const {
         auto resolveSlot = [&](OutfitSituation slot) {
-            return GetRandomFlag(slot) ? resolveRandom(slot) : GetSlot(slot);
+            const int selected = GetRandomFlag(slot) ? resolveRandom(slot) : GetSlot(slot);
+            return slot == OutfitSituation::Adventuring && !allowed(selected) ? 0 : selected;
         };
         int selected = resolveSlot(situation);
         if (selected <= 0 && situation != OutfitSituation::Adventuring) {
             selected = resolveSlot(OutfitSituation::Adventuring);
         }
         return selected > 0 ? selected : outfitId;
+    }
+
+    template <class RandomResolver>
+    int ResolveOutfit(OutfitSituation situation, RandomResolver&& resolveRandom) const {
+        return ResolveOutfit(situation, resolveRandom, [](int) { return true; });
     }
 
     int GetSlot(OutfitSituation s) const {
@@ -129,7 +140,7 @@ public:
     bool HasAssignment(RE::FormID actorRuntimeId) const;
     int  GetOutfitId(RE::FormID actorRuntimeId) const;
 
-    // Returns all assignments: actor runtime FormID -> SituationalAssignment
+    // Active assignments only; preference-only NPCs must not enter equipment/OBody work.
     std::unordered_map<RE::FormID, SituationalAssignment> GetAll() const;
 
     // Situational assignment methods
@@ -143,6 +154,8 @@ public:
     // Randomize flag per situation slot
     void SetSituationRandom(RE::FormID actorRuntimeId, OutfitSituation situation, bool random);
     bool GetSituationRandom(RE::FormID actorRuntimeId, OutfitSituation situation) const;
+    void SetAdventuringArmorType(RE::FormID actorRuntimeId, OutfitArmorType type);
+    OutfitArmorType GetAdventuringArmorType(RE::FormID actorRuntimeId) const;
 
     // Original outfit tracking (for Default Outfit restore)
     bool CaptureOriginalOutfitState(

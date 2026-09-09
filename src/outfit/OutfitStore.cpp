@@ -77,16 +77,14 @@ void OutfitStore::Load()
     }
 }
 
-void OutfitStore::Save() const
+std::string OutfitStore::Serialize(const std::vector<CustomOutfit>& outfits, int nextId)
 {
-    std::lock_guard lock(_mutex);
-
     nlohmann::json json;
     json["version"] = 1;
-    json["nextId"] = _nextId;
+    json["nextId"] = nextId;
     json["outfits"] = nlohmann::json::array();
 
-    for (auto& outfit : _outfits) {
+    for (auto& outfit : outfits) {
         nlohmann::json oj;
         oj["id"] = outfit.id;
         oj["name"] = outfit.name;
@@ -103,6 +101,12 @@ void OutfitStore::Save() const
         json["outfits"].push_back(oj);
     }
 
+    return json.dump(2);
+}
+
+void OutfitStore::Save() const
+{
+    std::lock_guard lock(_mutex);
     try {
         auto path = GetStorePath();
         std::ofstream file(path);
@@ -110,7 +114,7 @@ void OutfitStore::Save() const
             logger::error("OutfitStore: failed to open outfits.json for writing");
             return;
         }
-        file << json.dump(2);
+        file << Serialize(_outfits, _nextId);
         file.flush();
         logger::info("OutfitStore: saved {} custom outfits", _outfits.size());
     } catch (const std::exception& e) {

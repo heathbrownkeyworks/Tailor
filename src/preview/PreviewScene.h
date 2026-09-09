@@ -20,6 +20,7 @@ namespace Tailor::Preview
         bool Protected(const RE::NiAVObject* node) const;
         void HideBranch(RE::NiAVObject* node);
         void KeepActorVisible(RE::NiAVObject* node);
+        void ReleaseDetachedDrawNodes();
         void Sweep(RE::Actor* actor);
         void HideWorldFeeders();
 

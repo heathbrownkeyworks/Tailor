@@ -4,6 +4,7 @@
 #include "preview/TailorPreviewSession.h"
 
 #include <chrono>
+#include <cstring>
 #include <thread>
 
 namespace
@@ -415,9 +416,15 @@ bool WigManager::StartCycling(RE::Actor* actor, WigCategory category)
         return false;
     }
 
+    // Keep one alphabetical snapshot for navigation, display and confirmation.
+    std::stable_sort(wigs.begin(), wigs.end(), [](const WigEntry& a, const WigEntry& b) {
+        return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+
     CycleState state;
     state.category = category;
     state.index = 0;
+    state.wigs = wigs;
 
     auto existing = WigAssignments::GetSingleton().GetAssignment(actor->GetFormID());
     if (existing) {
@@ -446,8 +453,7 @@ std::optional<WigEntry> WigManager::CycleNext()
         return std::nullopt;
     }
 
-    auto& library = WigLibrary::GetSingleton();
-    auto wigs = library.GetCategory(_cycleState->category);
+    const auto& wigs = _cycleState->wigs;
     if (wigs.empty()) {
         return std::nullopt;
     }
@@ -470,8 +476,7 @@ std::optional<WigEntry> WigManager::CyclePrev()
         return std::nullopt;
     }
 
-    auto& library = WigLibrary::GetSingleton();
-    auto wigs = library.GetCategory(_cycleState->category);
+    const auto& wigs = _cycleState->wigs;
     if (wigs.empty()) {
         return std::nullopt;
     }
@@ -495,8 +500,7 @@ std::optional<WigEntry> WigManager::CycleToIndex(int32_t index)
         return std::nullopt;
     }
 
-    auto& library = WigLibrary::GetSingleton();
-    auto wigs = library.GetCategory(_cycleState->category);
+    const auto& wigs = _cycleState->wigs;
     if (wigs.empty() || index < 0 || index >= static_cast<int32_t>(wigs.size())) {
         return std::nullopt;
     }
@@ -519,8 +523,7 @@ std::optional<WigEntry> WigManager::GetCurrentCycleWig() const
         return std::nullopt;
     }
 
-    auto& library = WigLibrary::GetSingleton();
-    auto wigs = library.GetCategory(_cycleState->category);
+    const auto& wigs = _cycleState->wigs;
     auto count = static_cast<int32_t>(wigs.size());
 
     if (wigs.empty() || _cycleState->index < 0 || _cycleState->index >= count) {
@@ -542,7 +545,7 @@ int32_t WigManager::GetCycleCount() const
     if (!_cycleState) {
         return 0;
     }
-    return static_cast<int32_t>(WigLibrary::GetSingleton().GetCategoryCount(_cycleState->category));
+    return static_cast<int32_t>(_cycleState->wigs.size());
 }
 
 std::vector<WigEntry> WigManager::GetCycleWigs() const
@@ -551,7 +554,7 @@ std::vector<WigEntry> WigManager::GetCycleWigs() const
     if (!_cycleState) {
         return {};
     }
-    return WigLibrary::GetSingleton().GetCategory(_cycleState->category);
+    return _cycleState->wigs;
 }
 
 void WigManager::ConfirmCycle()
@@ -584,11 +587,10 @@ void WigManager::ConfirmCycle(OutfitSituation situation)
     auto* target = GetTarget();
     if (!target) return;
 
-    auto& library = WigLibrary::GetSingleton();
-    auto wigs = library.GetCategory(_cycleState->category);
+    const auto& wigs = _cycleState->wigs;
     if (_cycleState->index < 0 || _cycleState->index >= static_cast<int32_t>(wigs.size())) return;
 
-    auto& wig = wigs[_cycleState->index];
+    const auto wig = wigs[_cycleState->index];
 
     // Save to situational assignment (clears legacy)
     auto& assignments = WigAssignments::GetSingleton();

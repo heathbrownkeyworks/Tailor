@@ -26,6 +26,7 @@ public:
     void ForceApplyForSituation(RE::Actor* actor);
     void ResetForGameLoad();
     void StartSleepMonitoring();
+    int ResolveOutfitForSituation(RE::FormID actorId, OutfitSituation situation);
 
 private:
     SituationHandler() = default;
@@ -59,6 +60,7 @@ private:
     RE::BGSKeyword* _kwInn = nullptr;
 
     std::unordered_map<RE::FormID, OutfitSituation> _currentSituations;
+    std::unordered_map<RE::FormID, int> _appliedOutfitIds;
     std::unordered_map<RE::FormID, int> _automaticRetryCounts;
     std::unordered_set<RE::FormID> _automaticRetryPending;
 
@@ -73,7 +75,6 @@ private:
     std::unordered_map<RE::FormID, ActorRandomState> _randomStates;
 
     int ResolveRandomOutfit(RE::FormID actorId, OutfitSituation situation);
-    int ResolveOutfitForSituation(RE::FormID actorId, OutfitSituation situation);
     static float GetGameDaysPassed();
     std::mt19937 _rng{ std::random_device{}() };
 

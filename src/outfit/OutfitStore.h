@@ -32,6 +32,8 @@ public:
     std::vector<std::string> GetArmorPluginNames() const;
 
 private:
+    friend class OutfitTransfer;
+    static std::string Serialize(const std::vector<CustomOutfit>& outfits, int nextId);
     OutfitStore() = default;
     OutfitStore(const OutfitStore&) = delete;
     OutfitStore& operator=(const OutfitStore&) = delete;

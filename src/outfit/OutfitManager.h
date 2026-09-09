@@ -24,7 +24,7 @@ public:
 
     // --- Create Outfit: dynamic outfit preview via OTFT ---
     void BeginCreateOutfit(RE::Actor* actor);
-    void EndCreateOutfit(RE::Actor* actor);
+    void EndCreateOutfit();
     void AddItemToCreateOutfit(RE::Actor* actor, const ArmorItem& item);
     void RemoveItemFromCreateOutfit(RE::Actor* actor, const ArmorItem& item);
     void LoadCreateOutfitItems(RE::Actor* actor, const std::vector<ArmorItem>& items);
@@ -35,9 +35,10 @@ public:
         int              categoryId = 0;
         int              index = 0;
         std::vector<int> outfitIds;   // custom outfit IDs
+        OutfitSituation situation = static_cast<OutfitSituation>(0);
     };
 
-    bool StartCycle(int categoryId);
+    bool StartCycle(int categoryId, OutfitSituation situation = static_cast<OutfitSituation>(0));
     bool CycleNext();
     bool CyclePrev();
     bool CycleToIndex(int index);
@@ -54,6 +55,8 @@ public:
 
     // Reset to vanilla outfit
     bool ResetOutfit(RE::Actor* actor);
+    // Restore the saved baseline without clearing assignments or NPC preferences.
+    bool RestoreOriginalOutfit(RE::Actor* actor, bool automatic = false);
 
     void CaptureDefaultOutfitsAtDataLoad();
     void ReApplyAllAssignments();
@@ -94,6 +97,9 @@ private:
     OutfitPair* GetOrCreateActorOutfit(RE::FormID actorId);
     bool FlushAndApplyOutfit(RE::Actor* actor, OutfitPair& pair);
     bool RestoreCycleSnapshot(RE::Actor* actor);
+    void TryEndCreateOutfit(std::uint64_t generation, int attempt);
+    void RestoreAssignedOutfit(RE::Actor* actor);
+    void QueuePreviewDiagnostics(RE::ActorHandle actor, std::uint64_t generation);
 
     RE::ActorHandle _currentTarget;
 
@@ -115,6 +121,8 @@ private:
     RE::BGSOutfit*  _preCreateOutfit = nullptr;
     RE::ActorHandle _createSessionActor;
     bool            _createSessionActive = false;
+    bool            _createSessionEnding = false;
+    std::uint64_t   _createSessionGeneration = 0;
 
     // Track original outfits before cycling
     RE::BGSOutfit*               _preCycleOutfit = nullptr;

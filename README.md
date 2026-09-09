@@ -4,7 +4,18 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.4.1**
+Current source version: **2.4.2**
+
+## Changes from 2.4.1 to 2.4.2
+
+- Added outfit import and export with name, armor type and category filters.
+- Imports preserve existing libraries and assignments and skip matching duplicates.
+- Added per-NPC Adventuring armor preferences for Heavy Armor, Light Armor, Clothing or Any.
+- Added outfit previews by clicking rows in Manage Outfits.
+- Outfits and wigs now appear alphabetically in Dressing previews.
+- Improved preview cleanup and outfit restoration, including support for armors with mismatched mesh slots such as Obi Bodysuit.
+- Improved outfit fallback when no suitable Adventuring outfit is available.
+- Fixed sidebar tooltips appearing behind page content.
 
 ## Changes in 2.4.1
 
@@ -36,6 +47,8 @@ Current source version: **2.4.1**
   assignments created by older Tailor versions.
 - Assign fixed or randomized outfits and wigs for adventuring, town, home, and
   sleep situations.
+- Choose an Adventuring armor preference for each NPC's fixed and random outfits.
+- Share selected outfits through portable JSON files with built-in categories.
 - Save persistent outfit, wig, and hair-color assignments.
 - Coordinate outfit changes with OBody NG so the NPC keeps the assigned body.
 - Use SmoothCam camera ownership when SmoothCam is installed.
@@ -55,7 +68,44 @@ them.
 
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
 The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
-Gameplay retesting of this correction is pending.
+Automated and browser checks do not replace gameplay verification of the new
+2.4.2 workflows on each supported runtime.
+
+## Sharing outfits
+
+Use Export in the outfit sidebar to select outfits, filter the list and name a
+JSON file. Tailor adds `.json` and saves in `Data/SKSE/Plugins/Tailor`. Only
+built-in category memberships are shared. Existing files and Tailor's own
+library, assignment and blacklist files cannot be overwritten.
+
+Place a shared file in the same folder and choose it from Import. With MO2,
+make the file available through a mod's `SKSE/Plugins/Tailor` folder. Import
+adds valid outfits without replacing existing outfits or NPC assignments.
+An outfit is a duplicate only when its exact name and armor item set match.
+Missing armor and unsupported categories are reported and skipped.
+
+Exports use stable category keys: `heavy`, `light`, `clothing`, `adventuring`,
+`town`, `home` and `sleep`. Local numeric category IDs are not portable.
+
+```json
+{
+  "format": "TailorOutfitExport",
+  "version": 1,
+  "outfits": [
+    {
+      "name": "Example Outfit",
+      "categories": ["light", "adventuring"],
+      "items": [
+        {"formId": 2048, "name": "Example Armor", "plugin": "ExampleArmor.esp"}
+      ]
+    }
+  ]
+}
+```
+
+Replace the example item with an installed armor record's plugin-local FormID
+and plugin filename. Item order and item display names do not affect duplicate
+matching; different outfit names remain separate outfits.
 
 ## Building
 

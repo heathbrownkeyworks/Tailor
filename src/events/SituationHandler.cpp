@@ -1,4 +1,5 @@
 #include "events/SituationHandler.h"
+#include "events/RandomOutfitPolicy.h"
 #include "events/SleepStatePolicy.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitManager.h"
@@ -125,13 +126,19 @@ int SituationHandler::ResolveRandomOutfit(RE::FormID actorId, OutfitSituation si
     int sitIdx = static_cast<int>(situation);
     if (sitIdx < 1 || sitIdx > 4) return 0;
 
-    const auto pool = OutfitLibrary::GetSingleton().GetSituationOutfitIds(sitTypeMap[sitIdx]);
-    if (pool.empty()) return 0;
-
+    auto& library = OutfitLibrary::GetSingleton();
+    const auto type = situation == OutfitSituation::Adventuring
+        ? OutfitAssignments::GetSingleton().GetAdventuringArmorType(actorId) : OutfitArmorType::Any;
+    auto pool = library.FilterByArmorType(library.GetSituationOutfitIds(sitTypeMap[sitIdx]), type);
+    std::erase_if(pool, [](int id) { return !OutfitStore::GetSingleton().GetOutfitById(id); });
     auto& rs = _randomStates[actorId].slots[sitIdx - 1];
+    if (pool.empty()) {
+        rs.lastRandomOutfitId = 0;
+        return 0;
+    }
     float currentDay = GetGameDaysPassed();
 
-    if (std::floor(currentDay) != std::floor(rs.lastRandomDay) || rs.lastRandomOutfitId == 0) {
+    if (!Tailor::Situations::IsRandomOutfitCurrent(rs.lastRandomOutfitId, rs.lastRandomDay, currentDay, pool)) {
         int previous = rs.lastRandomOutfitId;
         int poolSize = static_cast<int>(pool.size());
         std::uniform_int_distribution<int> dist(0, poolSize - 1);
@@ -163,6 +170,9 @@ int SituationHandler::ResolveOutfitForSituation(RE::FormID actorId, OutfitSituat
     const auto assignment = *saved;
     return assignment.ResolveOutfit(situation, [this, actorId](OutfitSituation slot) {
         return ResolveRandomOutfit(actorId, slot);
+    }, [&](int outfitId) {
+        return OutfitStore::GetSingleton().GetOutfitById(outfitId) &&
+            OutfitLibrary::GetSingleton().MatchesArmorType(outfitId, assignment.adventuringArmorType);
     });
 }
 
@@ -187,58 +197,54 @@ void SituationHandler::ApplyForSituation(RE::Actor* actor)
 
     auto situation = EvaluateSituation(actor);
 
-    auto it = _currentSituations.find(actorId);
-    if (it != _currentSituations.end() && it->second == situation) {
-        // Same situation — but check if randomize needs a day-change re-roll
-        bool anyRandom = assignments.GetSituationRandom(actorId, situation);
-        if (!anyRandom) return;  // Not random, same situation, skip
-
-        float currentDay = GetGameDaysPassed();
-        int sitIdx = static_cast<int>(situation) - 1;
-        auto rit = _randomStates.find(actorId);
-        if (rit != _randomStates.end() && sitIdx >= 0 && sitIdx < 4) {
-            if (std::floor(currentDay) == std::floor(rit->second.slots[sitIdx].lastRandomDay)) {
-                return;  // Same day, skip
-            }
-        }
-        // Day changed with random on — fall through to re-apply
-    }
+    // Revalidate the effective selection before the same-situation cache. A
+    // changed preference/pool must not retain an ineligible daily random choice.
+    const int outfitId = hasOutfitAssignment ? ResolveOutfitForSituation(actorId, situation) : 0;
+    const auto current = _currentSituations.find(actorId);
+    const auto applied = _appliedOutfitIds.find(actorId);
+    if (current != _currentSituations.end() && current->second == situation &&
+        applied != _appliedOutfitIds.end() && applied->second == outfitId) return;
 
     // --- Outfit situational application ---
     if (hasOutfitAssignment) {
-        int outfitId = ResolveOutfitForSituation(actorId, situation);
-        if (outfitId > 0) {
-            auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
-            if (outfit) {
-                if (!OutfitManager::GetSingleton().ApplyCustomOutfit(actor, *outfit, true)) {
-                    constexpr int kMaxAutomaticRetries = 80;
-                    if (_automaticRetryPending.contains(actorId)) {
-                        return;
-                    }
-
-                    auto& retryCount = _automaticRetryCounts[actorId];
-                    if (retryCount >= kMaxAutomaticRetries) {
-                        logger::warn(
-                            "SituationHandler: OBody never reached a safe state for {} after {} retries; "
-                            "leaving the situation uncached for a future event",
-                            actor->GetDisplayFullName(),
-                            kMaxAutomaticRetries);
-                        _automaticRetryCounts.erase(actorId);
-                        return;
-                    }
-
-                    ++retryCount;
-                    _automaticRetryPending.insert(actorId);
-                    ScheduleAutomaticRetry(
-                        actor->GetHandle(), actorId, std::chrono::milliseconds(250));
-                    return;
-                }
-                logger::info("SituationHandler: applied outfit '{}' (id={}) on {} for situation {}",
-                    outfit->name, outfitId, actor->GetDisplayFullName(), static_cast<int>(situation));
-            } else {
-                logger::warn("ApplyForSituation: outfit id {} not found for {} (situation {})",
-                    outfitId, actor->GetDisplayFullName(), static_cast<int>(situation));
+        auto* outfit = outfitId > 0 ? OutfitStore::GetSingleton().GetOutfitById(outfitId) : nullptr;
+        if (outfitId > 0 && !outfit) {
+            logger::warn("ApplyForSituation: outfit id {} not found for {}", outfitId, actor->GetDisplayFullName());
+            return;
+        }
+        const bool restored = outfit
+            ? OutfitManager::GetSingleton().ApplyCustomOutfit(actor, *outfit, true)
+            : OutfitManager::GetSingleton().RestoreOriginalOutfit(actor, true);
+        if (!restored) {
+            constexpr int kMaxAutomaticRetries = 80;
+            if (_automaticRetryPending.contains(actorId)) {
+                return;
             }
+
+            auto& retryCount = _automaticRetryCounts[actorId];
+            if (retryCount >= kMaxAutomaticRetries) {
+                logger::warn(
+                    "SituationHandler: OBody never reached a safe state for {} after {} retries; "
+                    "leaving the situation uncached for a future event",
+                    actor->GetDisplayFullName(),
+                    kMaxAutomaticRetries);
+                _automaticRetryCounts.erase(actorId);
+                return;
+            }
+
+            ++retryCount;
+            _automaticRetryPending.insert(actorId);
+            ScheduleAutomaticRetry(
+                actor->GetHandle(), actorId, std::chrono::milliseconds(250));
+            return;
+        }
+        if (outfit) {
+            logger::info("SituationHandler: applied outfit '{}' (id={}) on {} for situation {}",
+                outfit->name, outfitId, actor->GetDisplayFullName(), static_cast<int>(situation));
+        } else {
+            OutfitManager::NotifyOutfitChanged(actor);
+            logger::info("SituationHandler: restored original outfit on {} because no situation or generic outfit is eligible",
+                actor->GetDisplayFullName());
         }
     }
 
@@ -261,6 +267,7 @@ void SituationHandler::ApplyForSituation(RE::Actor* actor)
     _automaticRetryCounts.erase(actorId);
     _automaticRetryPending.erase(actorId);
     _currentSituations[actorId] = situation;
+    _appliedOutfitIds[actorId] = outfitId;
 }
 
 OutfitSituation SituationHandler::GetCachedSituation(RE::FormID actorId) const
@@ -277,6 +284,7 @@ void SituationHandler::SetCachedSituation(RE::FormID actorId, OutfitSituation si
 void SituationHandler::ClearCachedSituation(RE::FormID actorId)
 {
     _currentSituations.erase(actorId);
+    _appliedOutfitIds.erase(actorId);
     _automaticRetryCounts.erase(actorId);
 }
 
@@ -297,6 +305,7 @@ void SituationHandler::ResetForGameLoad()
     sSituationGeneration.fetch_add(1);
     _observedSleepStates.clear();
     _currentSituations.clear();
+    _appliedOutfitIds.clear();
     _automaticRetryCounts.clear();
     _automaticRetryPending.clear();
     _randomStates.clear();

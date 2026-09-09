@@ -3,6 +3,25 @@
 #include <algorithm>
 #include <unordered_set>
 
+namespace
+{
+    OutfitArmorType LegacyArmorType(const OutfitCategory& category)
+    {
+        if (!category.isDefault || !category.situationType.empty()) return OutfitArmorType::Any;
+        // Released defaults reserved 1/2/3 for Heavy/Light/Clothing and 4/5/6
+        // for their former male counterparts. Preserve renamed defaults.
+        if (category.id >= 1 && category.id <= 6) {
+            constexpr OutfitArmorType types[] = {
+                OutfitArmorType::Heavy, OutfitArmorType::Light, OutfitArmorType::Clothing };
+            return types[(category.id - 1) % 3];
+        }
+        if (category.name == "Heavy Armor") return OutfitArmorType::Heavy;
+        if (category.name == "Light Armor") return OutfitArmorType::Light;
+        if (category.name == "Clothing") return OutfitArmorType::Clothing;
+        return OutfitArmorType::Any;
+    }
+}
+
 OutfitLibrary& OutfitLibrary::GetSingleton()
 {
     static OutfitLibrary singleton;
@@ -26,6 +45,7 @@ void OutfitLibrary::CreateDefaults()
         cat.id = _nextId++;
         cat.name = name;
         cat.isDefault = true;
+        cat.armorType = LegacyArmorType(cat);
         _categories.push_back(std::move(cat));
     };
 
@@ -77,6 +97,7 @@ void OutfitLibrary::Load()
                     catJson["sex"] = cat.sex;
                     catJson["isDefault"] = cat.isDefault;
                     if (!cat.situationType.empty()) catJson["situationType"] = cat.situationType;
+                    if (cat.armorType != OutfitArmorType::Any) catJson["armorType"] = OutfitArmorTypeName(cat.armorType);
                     catJson["outfitIds"] = nlohmann::json::array();
                     json["categories"].push_back(catJson);
                 }
@@ -110,6 +131,8 @@ void OutfitLibrary::Load()
                     cat.sex = catJson.value("sex", std::string{});
                     cat.isDefault = catJson.value("isDefault", false);
                     cat.situationType = catJson.value("situationType", std::string{});
+                    cat.armorType = catJson.contains("armorType") && catJson["armorType"].is_string()
+                        ? ParseOutfitArmorType(catJson["armorType"].get<std::string>()) : LegacyArmorType(cat);
 
                     if (catJson.contains("outfitIds") && catJson["outfitIds"].is_array()) {
                         for (auto& idJson : catJson["outfitIds"]) {
@@ -162,26 +185,31 @@ void OutfitLibrary::Load()
     }
 }
 
-void OutfitLibrary::Save() const
+std::string OutfitLibrary::Serialize(const std::vector<OutfitCategory>& categories, int nextId)
 {
-    std::lock_guard lock(_mutex);
-
     nlohmann::json json;
     json["version"] = 2;
-    json["nextId"] = _nextId;
+    json["nextId"] = nextId;
     json["categories"] = nlohmann::json::array();
 
-    for (auto& cat : _categories) {
+    for (auto& cat : categories) {
         nlohmann::json catJson;
         catJson["id"] = cat.id;
         catJson["name"] = cat.name;
         catJson["sex"] = cat.sex;
         catJson["isDefault"] = cat.isDefault;
         if (!cat.situationType.empty()) catJson["situationType"] = cat.situationType;
+        if (cat.armorType != OutfitArmorType::Any) catJson["armorType"] = OutfitArmorTypeName(cat.armorType);
         catJson["outfitIds"] = cat.outfitIds;
         json["categories"].push_back(catJson);
     }
 
+    return json.dump(2);
+}
+
+void OutfitLibrary::Save() const
+{
+    std::lock_guard lock(_mutex);
     try {
         auto path = GetLibraryPath();
         std::ofstream file(path);
@@ -189,7 +217,7 @@ void OutfitLibrary::Save() const
             logger::error("OutfitLibrary: failed to open library.json for writing: {}", path.string());
             return;
         }
-        file << json.dump(2);
+        file << Serialize(_categories, _nextId);
         file.flush();
         logger::info("OutfitLibrary: saved {} categories to {}", _categories.size(), path.string());
     } catch (const std::exception& e) {
@@ -208,6 +236,7 @@ bool OutfitLibrary::MergeLegacyDefaultCategories()
             [&](const OutfitCategory& other) {
                 return other.isDefault && other.name == category.name &&
                     other.situationType == category.situationType &&
+                    other.armorType == category.armorType &&
                     other.sex == (category.sex == "female" ? "male" : "female");
             });
         if (partner == merged.end()) continue;
@@ -296,6 +325,28 @@ const OutfitCategory* OutfitLibrary::GetCategoryById(int id) const
         }
     }
     return nullptr;
+}
+
+std::vector<int> OutfitLibrary::FilterByArmorType(const std::vector<int>& outfitIds, OutfitArmorType type) const
+{
+    if (type == OutfitArmorType::Any) return outfitIds;
+    std::lock_guard lock(_mutex);
+    std::unordered_set<int> allowed;
+    for (const auto& category : _categories) {
+        if (category.armorType == type) {
+            allowed.insert(category.outfitIds.begin(), category.outfitIds.end());
+        }
+    }
+    std::vector<int> result;
+    for (int id : outfitIds) {
+        if (allowed.contains(id)) result.push_back(id);
+    }
+    return result;
+}
+
+bool OutfitLibrary::MatchesArmorType(int outfitId, OutfitArmorType type) const
+{
+    return outfitId > 0 && !FilterByArmorType({outfitId}, type).empty();
 }
 
 // --- Category mutations ---

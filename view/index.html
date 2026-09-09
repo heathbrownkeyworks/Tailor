@@ -531,6 +531,9 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
 .court-side.right { border-left: 1px solid var(--line-2); box-shadow: -24px 0 64px rgba(0, 0, 0, 0.45), var(--bevel); }
 
 .court-host {
+  /* Keep page controls below the adjacent rail's flyout tooltips. */
+  position: relative;
+  z-index: 0;
   width: 0;
   min-width: 0;
   overflow: hidden;
@@ -797,6 +800,8 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
    Icon rail — page navigation (Forge chrome)
    ================================================================ */
 .rail {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   width: var(--rail-width);
   display: flex;
@@ -1106,6 +1111,7 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
   display: flex; align-items: center; gap: 10px;
 }
 .t-row:hover { background: rgba(244, 235, 216, 0.04); }
+.t-row.preview-selected { background: rgba(212,160,68,0.08); box-shadow: inset 2px 0 var(--amber); }
 .t-row:last-child { border-bottom: none; }
 
 /* Inline action buttons in rows */
@@ -1133,6 +1139,45 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
 }
 .t-row-btn-copy:hover { background: rgba(244,235,216,0.12); border-color: rgba(244,235,216,0.22); }
 
+/* Outfit transfer screens share the library's surfaces and spacing. */
+.transfer-header { display:flex; align-items:center; gap:12px; padding:16px 20px 12px; border-bottom:1px solid var(--border); }
+.transfer-header h2 { font-size:16px; }
+.transfer-body { padding:16px 20px; flex:1; min-height:0; display:flex; flex-direction:column; gap:14px; }
+.transfer-description { color:var(--fg-2); font-size:13px; line-height:1.6; }
+.transfer-filters { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.transfer-filters label { display:flex; flex-direction:column; gap:6px; min-width:0; color:var(--fg-2); font-size:12px; }
+.transfer-select { appearance:none; width:100%; min-height:42px; padding:10px 28px 10px 12px; border:1px solid var(--border); border-radius:var(--radius-md); background-color:var(--surface); color:var(--fg-1); font:inherit; font-size:13px; }
+.transfer-select:focus-visible { outline:2px solid var(--amber); outline-offset:2px; }
+.transfer-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.transfer-toolbar .transfer-count { margin-left:auto; color:var(--amber-light); font-size:12px; }
+.transfer-list { flex:1; min-height:80px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--surface); }
+.transfer-row { width:100%; text-align:left; cursor:pointer; color:var(--fg-1); background:transparent; }
+.transfer-row.selected { background:rgba(212,160,68,0.08); box-shadow:inset 2px 0 var(--amber); }
+.transfer-row input { width:16px; height:16px; accent-color:var(--amber); color-scheme:dark; flex-shrink:0; }
+.transfer-row-info { flex:1; min-width:0; }
+.transfer-row-name { font-size:14px; overflow-wrap:anywhere; }
+.transfer-row-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+.transfer-tag { padding:2px 7px; border-radius:3px; color:var(--amber-dim); background:rgba(212,160,68,0.1); font-size:10px; font-weight:600; }
+.transfer-meta { color:var(--fg-3); font-size:12px; flex-shrink:0; }
+.transfer-empty { padding:28px 20px; color:var(--fg-2); font-size:13px; line-height:1.7; }
+.transfer-footer { display:flex; align-items:center; gap:12px; padding:16px 20px; border-top:1px solid var(--border); }
+.transfer-footer .t-btn-primary { min-width:160px; margin-left:auto; }
+.transfer-status { color:var(--amber-light); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.transfer-status:empty { display:none; }
+.transfer-status.error, .transfer-error { color:#e99c9c; }
+.transfer-result { max-height:180px; overflow:auto; }
+.transfer-result ul { margin:8px 0 0; padding-left:18px; list-style:disc; font-size:12px; color:var(--fg-2); }
+.transfer-modal { display:none; position:fixed; inset:0; z-index:100; align-items:center; justify-content:center; background:rgba(5,4,2,0.7); backdrop-filter:blur(8px); }
+.transfer-dialog { width:440px; max-width:90vw; padding:24px; border-radius:18px; border:1px solid var(--border); background:linear-gradient(180deg,#2a2118,#14110d); box-shadow:0 30px 80px rgba(0,0,0,0.6),var(--glow-amber); }
+.transfer-dialog h2 { margin-bottom:12px; font-size:14px; }
+.transfer-filename { display:flex; align-items:center; gap:10px; margin:16px 0 8px; }
+.transfer-filename input { flex:1; min-width:0; }
+.transfer-filename span { color:var(--amber-dim); font-size:14px; }
+.transfer-error { min-height:20px; font-size:12px; line-height:1.5; }
+.transfer-dialog-actions { display:flex; gap:10px; margin-top:16px; }
+.transfer-dialog-actions button { flex:1; }
+.transfer-dialog .t-btn-primary:hover:not(:disabled), .transfer-footer .t-btn-primary:hover:not(:disabled) { background:linear-gradient(135deg,#fbbf24,#f59e0b,#d97706); color:#0a0807; }
+
 /* Situation cards — compact fixed-height rows (the old flex:1 rows
    stretched to split the dock's full page height between them) */
 .sit-card {
@@ -1151,6 +1196,18 @@ body[data-density="spacious"]   { --density-pad: 20px; --density-row: 18px; --de
   background: rgba(244, 235, 216, 0.05);
   border-color: rgba(245, 158, 11, 0.25);
 }
+.sit-card-adventuring { flex-direction: column; align-items: stretch; }
+.sit-card-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.sit-armor-settings { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.sit-armor-settings label { color: var(--text-dim); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.sit-armor-select { appearance: none; min-width: 148px; min-height: 34px; padding: 6px 30px 6px 12px; border: 1px solid var(--border); border-radius: 6px; background-color: var(--surface); color: var(--amber-light); font: inherit; font-size: 13px; cursor: pointer; transition: border-color var(--dur-base); }
+.sit-armor-settings .help-icon { margin-left: 0; }
+.sit-armor-select:hover { border-color: var(--border-hover); }
+.sit-armor-select:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.sit-armor-select:disabled { opacity: 0.5; cursor: default; }
+.sit-armor-count { margin-left: auto; color: var(--text-dim); font-size: 12px; }
+.sit-armor-message { margin: 0; color: var(--amber-dim); font-size: 12px; line-height: 1.5; }
+.sit-armor-message:empty { display: none; }
 .sit-icon {
   width: 40px;
   height: 40px;
@@ -1542,6 +1599,14 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         <span class="rail-tip">Outfit Situations</span>
       </button>
+      <button class="rail-btn" data-page="export" onclick="railGo('export')" aria-label="Export outfits">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m-4 4 4-4 4 4M4 14v6h16v-6"/></svg>
+        <span class="rail-tip">Export Outfits</span>
+      </button>
+      <button class="rail-btn" data-page="import" onclick="railGo('import')" aria-label="Import outfits">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M4 14v6h16v-6"/></svg>
+        <span class="rail-tip">Import Outfits</span>
+      </button>
     </nav>
     <div id="courtLeftHost" class="court-host">
      <div class="page-host-sizer">
@@ -1745,6 +1810,51 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
   </div>
 </div>
 
+<!-- ======== OUTFIT EXPORT / IMPORT ======== -->
+<div id="exportPanel" class="panel">
+  <div class="transfer-header">
+    <button class="t-btn t-btn-small" onclick="showScreen('main','outfits')">&#8592; Back</button>
+    <h2 class="t-title-ceremonial">Export Outfits</h2>
+    <span class="help-icon">?<span class="help-tooltip">Select outfits to share. Only built-in categories travel with an outfit; custom categories stay in your library. Recipients need the armor mods used by these outfits.</span></span>
+  </div>
+  <div class="transfer-body">
+    <p class="transfer-description">Choose outfits to share. Your selections stay checked while you filter the list.</p>
+    <div class="transfer-filters">
+      <label>Armor type<select id="exportArmorFilter" class="transfer-select" onchange="renderExportOutfits()"><option value="">All armor types</option><option value="heavy">Heavy Armor</option><option value="light">Light Armor</option><option value="clothing">Clothing</option></select></label>
+      <label>Category<select id="exportCategoryFilter" class="transfer-select" onchange="renderExportOutfits()"><option value="">All built-in categories</option><option value="heavy">Heavy Armor</option><option value="light">Light Armor</option><option value="clothing">Clothing</option><option value="adventuring">Adventuring</option><option value="town">Town</option><option value="home">Home</option><option value="sleep">Sleep</option></select></label>
+    </div>
+    <input id="exportSearch" class="t-input" type="search" placeholder="Search outfits by name..." aria-label="Search outfits to export" oninput="renderExportOutfits()">
+    <div class="transfer-toolbar">
+      <button id="exportSelectVisible" class="t-btn t-btn-small" onclick="selectVisibleExports()">Select visible</button>
+      <button id="exportClearSelection" class="t-btn t-btn-small" onclick="clearExportSelection()">Clear selection</button>
+      <span id="exportSelectionCount" class="transfer-count" aria-live="polite"></span>
+    </div>
+    <div id="exportOutfitList" class="transfer-list" aria-label="Exportable outfits"></div>
+  </div>
+  <div class="transfer-footer">
+    <div id="exportStatus" class="transfer-status" role="status"></div>
+    <button id="exportOutfitsButton" class="t-btn t-btn-primary" onclick="openExportName()" disabled>Export</button>
+  </div>
+</div>
+
+<div id="importPanel" class="panel">
+  <div class="transfer-header">
+    <button class="t-btn t-btn-small" onclick="showScreen('main','outfits')">&#8592; Back</button>
+    <h2 class="t-title-ceremonial">Import Outfits</h2>
+    <span class="help-icon">?<span class="help-tooltip">Choose a file to import its outfits. A duplicate has the same name and armor items. Missing armor or unsupported categories cause that outfit to be skipped. Existing outfits and NPC assignments are preserved.</span></span>
+  </div>
+  <div class="transfer-body">
+    <p class="transfer-description">Choose a JSON file to add its outfits to your library.</p>
+    <div class="transfer-toolbar">
+      <button id="importRefresh" class="t-btn t-btn-small" onclick="refreshTransferData()">Refresh files</button>
+      <span class="transfer-meta">SKSE\Plugins\Tailor</span>
+    </div>
+    <div id="importFileList" class="transfer-list" aria-label="Outfit import files"></div>
+    <div id="importResult" class="transfer-status transfer-result" role="status" aria-live="polite"></div>
+  </div>
+  <div class="transfer-footer"><p class="transfer-description">Only built-in categories are imported. Tailor's own data files are excluded.</p></div>
+</div>
+
 <!-- ======== SCREEN 3: MANAGE LIBRARY ======== -->
 <div id="libraryPanel" class="panel">
   <div style="display:flex; align-items:center; padding:16px 20px 12px; border-bottom:1px solid var(--border);">
@@ -1754,7 +1864,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     </button>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" style="margin-right:8px;"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     <h2 class="t-title-ceremonial" style="font-size:16px;">Manage Outfits</h2>
-    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click an outfit</strong> to assign it, or use the <strong style="color:var(--text)">edit</strong> button to modify. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
+    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click a row</strong> to preview the outfit on the target NPC, or use the <strong style="color:var(--text)">Edit</strong> button to modify it. Leaving this screen restores the NPC's outfit. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
   </div>
 
   <div style="padding:16px 20px; flex:1; min-height:0; display:flex; flex-direction:column;">
@@ -1972,7 +2082,8 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
   <!-- Body — compact situation cards -->
   <div style="padding:20px; flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; overflow-y:auto;">
     <!-- Situation rows -->
-    <div id="sitRow_1" class="sit-card">
+    <div id="sitRow_1" class="sit-card sit-card-adventuring">
+      <div class="sit-card-main">
       <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
         <span class="sit-icon">&#x2694;</span>
         <div style="display:flex; flex-direction:column; gap:2px; min-width:0;">
@@ -1991,6 +2102,19 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         <button id="sitDressBtn_1" class="t-btn t-btn-small t-btn-primary" onclick="openSitCategoryPicker(1)">Dress</button>
         <button class="t-btn t-btn-small t-btn-danger" onclick="clearSituation(1)">&#10005;</button>
       </div>
+      </div>
+      <div class="sit-armor-settings">
+        <label for="adventuringArmorType">Armor type</label>
+        <select id="adventuringArmorType" class="sit-armor-select" onchange="changeAdventuringArmorType(this.value)" aria-describedby="adventuringArmorHelp adventuringArmorMessage">
+          <option value="any">Any</option>
+          <option value="heavy">Heavy Armor</option>
+          <option value="light">Light Armor</option>
+          <option value="clothing">Clothing</option>
+        </select>
+        <span class="help-icon">?<span id="adventuringArmorHelp" class="help-tooltip">Saved for this NPC. Filters Adventuring Dress and Random using your outfit's <strong style="color:var(--text)">Heavy Armor, Light Armor, or Clothing categories</strong>. An outfit can belong to an armor category and Adventuring together. Any includes all types.</span></span>
+        <span id="adventuringArmorCount" class="sit-armor-count" aria-live="polite"></span>
+      </div>
+      <p id="adventuringArmorMessage" class="sit-armor-message" role="status"></p>
     </div>
     <div id="sitRow_2" class="sit-card">
       <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
@@ -2516,7 +2640,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-      <span class="footer-ver">v2.4.1</span>
+      <span class="footer-ver">v2.4.2</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -2546,6 +2670,19 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
       <button class="t-btn" style="flex:1;" onclick="closePrompt()">Cancel</button>
     </div>
   </div>
+ </div>
+
+ <div id="exportNameOverlay" class="transfer-modal" role="dialog" aria-modal="true" aria-labelledby="exportNameTitle">
+   <div class="transfer-dialog">
+     <h2 id="exportNameTitle" class="t-title-ceremonial">Name your export</h2>
+     <p class="transfer-description">Enter a filename. Tailor adds the .json extension and saves it in SKSE\Plugins\Tailor.</p>
+     <div class="transfer-filename"><input id="exportFilename" class="t-input" type="text" autocomplete="off" maxlength="120" aria-label="Export filename without extension" aria-describedby="exportNameError" oninput="clearExportNameError()"><span>.json</span></div>
+     <div id="exportNameError" class="transfer-error" role="alert"></div>
+     <div class="transfer-dialog-actions">
+       <button id="exportNameSave" class="t-btn t-btn-primary" onclick="submitExport()">Export</button>
+       <button id="exportNameCancel" class="t-btn" onclick="closeExportName()">Cancel</button>
+     </div>
+   </div>
  </div>
 
  <!-- Permanent status overlay; kept in the court stacking context. -->
@@ -2650,6 +2787,8 @@ var RAIL_PAGES = {
   wigs:          ['wigCycle'],
   library:       ['library', 'create', 'edit', 'categories', 'blacklist'],
   situations:    ['situations'],
+  export:        ['export'],
+  import:        ['import'],
   wigLibrary:    ['wigLibrary', 'wigAdd', 'wigBlacklist'],
   hairColor:     ['wigHairColor', 'wigCustomColors'],
   wigSituations: ['wigSituations']
@@ -2714,6 +2853,8 @@ function railGo(page) {
     openLibrary();
   } else if (page === 'situations') {
     openSituationsScreen();
+  } else if (page === 'export' || page === 'import') {
+    openTransferScreen(page);
   } else if (page === 'wigLibrary') {
     wigShowLibrary();
   } else if (page === 'hairColor') {
@@ -2754,6 +2895,7 @@ var _cycleCategoryName = '';
 
 var _allOutfits = [];
 var _libCategoryId = 0;
+var _libPreviewOutfitId = 0;
 var _openDropdown = null;
 
 var _createCategoryIds = [];
@@ -2984,6 +3126,9 @@ function tailorShowPanel() {
 
 function tailorHidePanel() {
   // C++ invokes this before hiding the view — play the fade-out.
+  _libPreviewOutfitId = 0;  // Native lifecycle cleanup already restores the outfit.
+  document.getElementById('exportNameOverlay').style.display = 'none';
+  _transferBusy = '';
   clearToast();
   _previewOpenGeneration = 0;
   _previewViewportTimers.forEach(clearTimeout);
@@ -3477,6 +3622,8 @@ function tailorSetBlacklistData(data) {
 
 function tailorSetSituationData(data) {
   _situationData = data || {};
+  _situationDataPending = false;
+  _adventuringArmorPending = '';
   renderSituationSlots();
 }
 
@@ -3600,6 +3747,7 @@ function switchTab(tab) {
 // ============================================================
 
 function showScreen(name, mainTab) {
+  if (name !== 'library') endLibraryOutfitPreview();
   if (document.activeElement && document.activeElement.tagName === 'INPUT') {
     document.activeElement.blur();
   }
@@ -3617,7 +3765,7 @@ function showScreen(name, mainTab) {
   var screens = {
     main: 'mainPanel', cycle: 'cyclePanel', library: 'libraryPanel',
     create: 'createPanel', edit: 'createPanel', categories: 'categoriesPanel',
-    blacklist: 'blacklistPanel', situations: 'situationsPanel'
+    blacklist: 'blacklistPanel', situations: 'situationsPanel', export: 'exportPanel', import: 'importPanel'
   };
   var targetPanel = screens[name];
   var visited = {};
@@ -3650,11 +3798,12 @@ function wigHideAllScreens() {
 }
 
 function wigShowScreen(name) {
+  endLibraryOutfitPreview();
   if (document.activeElement && document.activeElement.tagName === 'INPUT') {
     document.activeElement.blur();
   }
   // Hide outfit panels
-  var outfitPanels = ['mainPanel','cyclePanel','libraryPanel','createPanel','categoriesPanel','blacklistPanel','situationsPanel'];
+  var outfitPanels = ['mainPanel','cyclePanel','libraryPanel','createPanel','categoriesPanel','blacklistPanel','situationsPanel','exportPanel','importPanel'];
   outfitPanels.forEach(function(id) { document.getElementById(id).classList.remove('active'); });
   // Hide all wig panels
   wigHideAllScreens();
@@ -4176,7 +4325,7 @@ function filterCycleDropdown() {
 
   var filtered = _cycleItems.filter(function(item) {
     return !query || item.name.toLowerCase().indexOf(query) !== -1;
-  }).sort(function(a, b) { return a.name.localeCompare(b.name); });
+  });
 
   if (filtered.length === 0) {
     list.innerHTML = '<div style="padding:11px 16px; color:var(--text-dim); font-size:15px;">No matches</div>';
@@ -4309,6 +4458,21 @@ function buildLibFilterDropdown() {
 //  Library: Outfit List
 // ============================================================
 
+function endLibraryOutfitPreview() {
+  if (!_libPreviewOutfitId) return;
+  _libPreviewOutfitId = 0;
+  window.tailorCancelCreateOutfit('');
+}
+
+function previewLibraryOutfit(outfitId) {
+  if (!_targetName) { toast('Select an NPC to preview outfits'); return; }
+  if (_libPreviewOutfitId === outfitId) return;
+  if (!_libPreviewOutfitId) window.tailorBeginCreateOutfit('');
+  _libPreviewOutfitId = outfitId;
+  window.tailorPreviewOutfit(JSON.stringify({outfitId: outfitId}));
+  renderLibraryOutfits();
+}
+
 function renderLibraryOutfits() {
   var container = document.getElementById('outfitBrowserList');
   container.innerHTML = '';
@@ -4326,6 +4490,10 @@ function renderLibraryOutfits() {
     return true;
   }).sort(function(a, b) { return a.name.localeCompare(b.name); });
 
+  if (_libPreviewOutfitId && !filtered.some(function(o) { return o.id === _libPreviewOutfitId; })) {
+    endLibraryOutfitPreview();
+  }
+
   if (filtered.length === 0) {
     container.innerHTML = '<div style="padding:30px 16px; text-align:center; color:var(--text-dim);">' +
       (_allOutfits.length === 0 ? 'No outfits created yet' : 'No matching outfits') + '</div>';
@@ -4335,9 +4503,15 @@ function renderLibraryOutfits() {
   filtered.forEach(function(o) {
     var row = document.createElement('div');
     row.className = 't-row';
+    if (o.id === _libPreviewOutfitId) row.classList.add('preview-selected');
+    row.style.cursor = 'pointer';
     row.style.flexDirection = 'column';
     row.style.alignItems = 'stretch';
     row.style.gap = '6px';
+    row.onclick = function(e) {
+      if (e.target.closest('button')) return;
+      previewLibraryOutfit(o.id);
+    };
     var catTags = '';
     if (o.categories && o.categories.length > 0) {
       catTags = '<span style="display:flex; flex-wrap:wrap; gap:4px;">'
@@ -4381,6 +4555,7 @@ function tailorSetOutfitUsage(data) {
   }
 
   showConfirm('Delete Outfit', msg, function() {
+    if (_libPreviewOutfitId === outfitId) endLibraryOutfitPreview();
     window.tailorDeleteOutfit(JSON.stringify({outfitId: outfitId}));
     toast('Outfit "' + name + '" deleted', 'danger');
     _pendingDeleteOutfitId = 0;
@@ -4889,12 +5064,272 @@ function doClearBlacklist() {
 }
 
 // ============================================================
+//  Outfit Import and Export
+// ============================================================
+
+var _transferOutfits = [];
+var _transferFiles = [];
+var _exportSelected = new Set();
+var _transferLoading = false;
+var _transferBusy = '';
+var _transferError = '';
+var _transferLabels = {heavy:'Heavy Armor', light:'Light Armor', clothing:'Clothing', adventuring:'Adventuring', town:'Town', home:'Home', sleep:'Sleep'};
+
+function openTransferScreen(screen) {
+  showScreen(screen);
+  refreshTransferData();
+}
+
+function refreshTransferData() {
+  if (_transferBusy) return;
+  _transferLoading = true;
+  _transferError = '';
+  renderExportOutfits();
+  renderImportFiles();
+  window.tailorRequestTransferData('');
+}
+
+function tailorSetTransferData(data) {
+  _transferLoading = false;
+  _transferError = data.error || '';
+  _transferOutfits = (data.outfits || []).slice().sort(function(a,b) { return a.name.localeCompare(b.name, undefined, {numeric:true, sensitivity:'base'}); });
+  _transferFiles = (data.files || []).slice().sort(function(a,b) { return a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'}); });
+  var ids = new Set(_transferOutfits.map(function(outfit) { return outfit.id; }));
+  _exportSelected.forEach(function(id) { if (!ids.has(id)) _exportSelected.delete(id); });
+  renderExportOutfits();
+  renderImportFiles();
+}
+
+function filteredExportOutfits() {
+  var armor = document.getElementById('exportArmorFilter').value;
+  var category = document.getElementById('exportCategoryFilter').value;
+  var search = document.getElementById('exportSearch').value.trim().toLowerCase();
+  return _transferOutfits.filter(function(outfit) {
+    return (!armor || outfit.categories.indexOf(armor) >= 0) &&
+      (!category || outfit.categories.indexOf(category) >= 0) && (!search || outfit.name.toLowerCase().indexOf(search) >= 0);
+  });
+}
+
+function renderExportOutfits() {
+  var list = document.getElementById('exportOutfitList');
+  list.innerHTML = '';
+  var visible = filteredExportOutfits();
+  var disabled = _transferLoading || !!_transferBusy;
+  var empty = _transferLoading ? 'Loading outfits...' : _transferError ||
+    (_transferOutfits.length ? 'No outfits match these filters.' : 'No exportable outfits yet. Add an outfit to a built-in category first.');
+  if (_transferLoading || _transferError || !visible.length) {
+    list.innerHTML = '<div class="transfer-empty">' + escapeHtml(empty) + '</div>';
+  } else {
+    visible.forEach(function(outfit) {
+      var row = document.createElement('label');
+      row.className = 't-row transfer-row' + (_exportSelected.has(outfit.id) ? ' selected' : '');
+      var checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = _exportSelected.has(outfit.id);
+      checkbox.disabled = disabled;
+      checkbox.setAttribute('aria-label', 'Export ' + outfit.name);
+      checkbox.onchange = function() {
+        if (this.checked) _exportSelected.add(outfit.id); else _exportSelected.delete(outfit.id);
+        row.classList.toggle('selected', this.checked);
+        updateExportSelectionCount();
+      };
+      row.appendChild(checkbox);
+      var info = document.createElement('span');
+      info.className = 'transfer-row-info';
+      info.innerHTML = '<span class="transfer-row-name">' + escapeHtml(outfit.name) + '</span><span class="transfer-row-tags">' +
+        outfit.categories.map(function(key) { return '<span class="transfer-tag">' + escapeHtml(_transferLabels[key] || key) + '</span>'; }).join('') + '</span>';
+      row.appendChild(info);
+      var count = document.createElement('span');
+      count.className = 'transfer-meta';
+      count.textContent = outfit.itemCount + ' item' + (outfit.itemCount === 1 ? '' : 's');
+      row.appendChild(count);
+      list.appendChild(row);
+    });
+  }
+  document.getElementById('exportSelectVisible').disabled = disabled || !visible.length;
+  updateExportSelectionCount();
+}
+
+function updateExportSelectionCount() {
+  var disabled = _transferLoading || !!_transferBusy;
+  document.getElementById('exportSelectionCount').textContent = _exportSelected.size + ' selected · ' + filteredExportOutfits().length + ' shown';
+  document.getElementById('exportOutfitsButton').disabled = disabled || !_exportSelected.size;
+  document.getElementById('exportClearSelection').disabled = disabled || !_exportSelected.size;
+}
+
+function selectVisibleExports() {
+  if (_transferLoading || _transferBusy) return;
+  filteredExportOutfits().forEach(function(outfit) { _exportSelected.add(outfit.id); });
+  renderExportOutfits();
+}
+
+function clearExportSelection() {
+  if (_transferBusy) return;
+  _exportSelected.clear();
+  renderExportOutfits();
+}
+
+function exportNameError(name) {
+  if (!name) return 'Enter a filename before exporting.';
+  if (new TextEncoder().encode(name).length > 120) return 'Use a shorter filename.';
+  if (name.indexOf('.') >= 0) return 'Enter a name without dots or a file extension. Tailor adds .json.';
+  if (/[<>:"/\\|?*\x00-\x1f\x7f]/.test(name)) return 'Enter a filename without paths or special characters.';
+  if (/^(assignments|library|outfits|blacklist)$/i.test(name)) return 'That filename is reserved for Tailor. Choose another name.';
+  if (/^(con|prn|aux|nul|conin\$|conout\$|com[0-9]|lpt[0-9])$/i.test(name)) return 'That filename is reserved by Windows. Choose another name.';
+  if (_transferFiles.some(function(file) { return file.toLowerCase() === (name + '.json').toLowerCase(); })) return 'That export already exists. Choose a different filename.';
+  return '';
+}
+
+function clearExportNameError() {
+  document.getElementById('exportNameError').textContent = '';
+  document.getElementById('exportFilename').removeAttribute('aria-invalid');
+}
+
+function openExportName() {
+  if (_transferLoading || _transferBusy || !_exportSelected.size) return;
+  clearExportNameError();
+  document.getElementById('exportFilename').value = '';
+  document.getElementById('exportFilename').disabled = false;
+  document.getElementById('exportNameSave').disabled = false;
+  document.getElementById('exportNameCancel').disabled = false;
+  document.getElementById('exportNameOverlay').style.display = 'flex';
+  requestAnimationFrame(function() { document.getElementById('exportFilename').focus(); });
+}
+
+function closeExportName() {
+  if (_transferBusy === 'export') return;
+  document.getElementById('exportNameOverlay').style.display = 'none';
+  document.getElementById('exportOutfitsButton').focus();
+}
+
+function submitExport() {
+  if (_transferBusy || !_exportSelected.size) return;
+  var name = document.getElementById('exportFilename').value.trim();
+  var error = exportNameError(name);
+  document.getElementById('exportNameError').textContent = error;
+  if (error) {
+    document.getElementById('exportFilename').setAttribute('aria-invalid', 'true');
+    document.getElementById('exportFilename').focus();
+    return;
+  }
+  _transferBusy = 'export';
+  document.getElementById('exportFilename').disabled = true;
+  document.getElementById('exportNameSave').disabled = true;
+  document.getElementById('exportNameCancel').disabled = true;
+  renderExportOutfits();
+  window.tailorExportOutfits(JSON.stringify({name:name, outfitIds:Array.from(_exportSelected)}));
+}
+
+function renderImportFiles() {
+  var list = document.getElementById('importFileList');
+  list.innerHTML = '';
+  document.getElementById('importRefresh').disabled = _transferLoading || !!_transferBusy;
+  if (_transferLoading || _transferError || !_transferFiles.length) {
+    var message = _transferLoading ? 'Looking for export files...' : _transferError || 'No import files found. Place an outfit export JSON in SKSE\\Plugins\\Tailor, then refresh.';
+    list.innerHTML = '<div class="transfer-empty">' + escapeHtml(message) + '</div>';
+    return;
+  }
+  _transferFiles.forEach(function(file) {
+    var row = document.createElement('button');
+    row.className = 't-row transfer-row';
+    row.disabled = !!_transferBusy;
+    row.setAttribute('aria-label', 'Import ' + file);
+    row.innerHTML = '<span class="transfer-row-info"><span class="transfer-row-name">' + escapeHtml(file) + '</span></span><span class="transfer-meta">Import &#8594;</span>';
+    row.onclick = function() { importOutfitFile(file); };
+    list.appendChild(row);
+  });
+}
+
+function importOutfitFile(file) {
+  if (_transferLoading || _transferBusy || _transferFiles.indexOf(file) < 0) return;
+  _transferBusy = 'import';
+  var result = document.getElementById('importResult');
+  result.classList.remove('error');
+  result.textContent = 'Importing ' + file + '...';
+  renderImportFiles();
+  renderExportOutfits();
+  window.tailorImportOutfits(JSON.stringify({file:file}));
+}
+
+function tailorTransferResult(data) {
+  _transferBusy = '';
+  if (data.operation === 'export') {
+    document.getElementById('exportFilename').disabled = false;
+    document.getElementById('exportNameSave').disabled = false;
+    document.getElementById('exportNameCancel').disabled = false;
+    if (data.ok) {
+      document.getElementById('exportNameOverlay').style.display = 'none';
+      var status = document.getElementById('exportStatus');
+      status.classList.remove('error');
+      status.textContent = 'Saved ' + data.exported + ' outfit' + (data.exported === 1 ? '' : 's') + ' to ' + data.file;
+      document.getElementById('exportOutfitsButton').focus();
+    } else {
+      document.getElementById('exportNameError').textContent = data.error || 'Export failed. Please try again.';
+      document.getElementById('exportFilename').setAttribute('aria-invalid', 'true');
+      document.getElementById('exportFilename').focus();
+    }
+  } else {
+    var result = document.getElementById('importResult');
+    result.classList.toggle('error', !data.ok);
+    if (!data.ok) {
+      result.textContent = data.error || 'Import failed. Your existing outfits were preserved.';
+    } else {
+      var skipped = data.skipped || [];
+      result.innerHTML = '<div>' + escapeHtml(data.file) + '</div><div>Added ' + data.added + ' · Duplicates ' + data.duplicates + ' · Skipped ' + skipped.length + '</div>';
+      if (skipped.length) result.innerHTML += '<ul>' + skipped.map(function(entry) { return '<li>' + escapeHtml(entry.name) + ': ' + escapeHtml(entry.reason) + '</li>'; }).join('') + '</ul>';
+    }
+  }
+  renderExportOutfits();
+  renderImportFiles();
+}
+
+// ============================================================
 //  Situational Outfits
 // ============================================================
 
 var _situationNames = {1: 'Adventuring', 2: 'Town', 3: 'Home', 4: 'Sleep'};
+var _adventuringArmorPending = '';
+var _situationDataPending = false;
+var _adventuringArmorNames = {any:'Any', heavy:'Heavy Armor', light:'Light Armor', clothing:'Clothing'};
+
+function changeAdventuringArmorType(type) {
+  if (!_targetName || _situationDataPending || _adventuringArmorPending || !_adventuringArmorNames[type]) return;
+  _adventuringArmorPending = type;
+  _sitCategoryPickerFor = 0;
+  document.getElementById('sitCategoryPicker').style.display = 'none';
+  renderAdventuringArmorPreference();
+  window.tailorSetAdventuringArmorType(JSON.stringify({armorType:type}));
+}
+
+function renderAdventuringArmorPreference() {
+  var type = _adventuringArmorPending || _situationData.adventuringArmorType || 'any';
+  var pending = _situationDataPending || !!_adventuringArmorPending;
+  var select = document.getElementById('adventuringArmorType');
+  select.value = type;
+  select.disabled = !_targetName || pending;
+  var count = _situationData.adventuringCatCount || 0;
+  document.getElementById('adventuringArmorCount').textContent = pending ? 'Updating...' :
+    count + ' matching outfit' + (count === 1 ? '' : 's') + ' in Adventuring';
+  var random = document.querySelector('#sitRandom_1 input');
+  random.disabled = !_targetName || pending || (!random.checked && count === 0);
+  document.getElementById('sitRandom_1').style.opacity = random.disabled ? '0.35' : '1';
+  var dress = document.getElementById('sitDressBtn_1');
+  dress.disabled = !_targetName || pending || !!_situationData.adventuringRandom ||
+    _situationData.adventuringHasDressOptions === false;
+  dress.style.opacity = dress.disabled ? '0.35' : '1';
+  var message = '';
+  if (!pending && !_situationData.adventuringRandom && _situationData.adventuringAssignedCompatible === false) {
+    message = 'The saved outfit does not match. Choose ' + (type === 'any' ? 'another' : 'a ' + _adventuringArmorNames[type]) + ' outfit; your regular outfit is the fallback.';
+  } else if (!pending && count === 0) {
+    message = type === 'any' ? 'Add outfits to Adventuring to use Random.' :
+      'For Random, add an outfit to both Adventuring and ' + _adventuringArmorNames[type] + '. Your regular outfit is the fallback.';
+  }
+  document.getElementById('adventuringArmorMessage').textContent = message;
+}
 
 function openSituationsScreen() {
+  _situationDataPending = true;
+  renderAdventuringArmorPreference();
   _sitCategoryPickerFor = 0;
   document.getElementById('sitCategoryPicker').style.display = 'none';
   document.getElementById('sitTargetName').textContent = _targetName ? '— ' + _targetName : '';
@@ -4946,6 +5381,7 @@ function renderSituationSlots() {
       }
     }
   }
+  renderAdventuringArmorPreference();
 }
 
 function toggleSituationRandom(situation, checked) {
@@ -4967,13 +5403,15 @@ function openSitCategoryPicker(situation) {
 
   var sortedSitCats = _categories.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
   sortedSitCats.forEach(function(cat) {
-    var hasOutfits = cat.outfitCount > 0;
+    var counts = _situationData.adventuringCategoryCounts;
+    var count = situation === 1 && counts ? (counts[cat.id] || 0) : cat.outfitCount;
+    var hasOutfits = count > 0;
     var btn = document.createElement('button');
     btn.className = 't-btn';
     btn.style.cssText = 'width:100%; justify-content:space-between; margin-bottom:4px;'
       + (hasOutfits ? '' : ' opacity:0.35; cursor:default;');
     btn.innerHTML = '<span>' + escapeHtml(cat.displayName || cat.name) + '</span>'
-      + '<span style="font-size:14px; color:var(--text-dim);">' + cat.outfitCount + '</span>';
+      + '<span style="font-size:14px; color:var(--text-dim);">' + count + '</span>';
     if (hasOutfits) {
       (function(id, name) {
         btn.onclick = function() { startSituationCycle(situation, id, name); };
@@ -4994,9 +5432,18 @@ function startSituationCycle(situation, categoryId, categoryName) {
 
   _cycleCategoryName = categoryName;
   document.getElementById('cycleCategoryName').textContent = categoryName;
-  document.getElementById('cycleSituationLabel').textContent = '(' + _situationNames[situation] + ')';
+  var armorType = _situationData.adventuringArmorType || 'any';
+  document.getElementById('cycleSituationLabel').textContent = '(' + _situationNames[situation] +
+    (situation === 1 && armorType !== 'any' ? ' · ' + _adventuringArmorNames[armorType] : '') + ')';
   showScreen('cycle');
-  window.tailorSelectCategory(JSON.stringify({id: categoryId}));
+  window.tailorSelectCategory(JSON.stringify({id: categoryId, situation:situation}));
+}
+
+function tailorCycleUnavailable() {
+  var situation = _cyclingSituation;
+  _cyclingSituation = 0;
+  showScreen(situation ? 'situations' : 'main');
+  toast('No matching outfits are available in this category');
 }
 
 function clearSituation(situation) {
@@ -5074,6 +5521,20 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
+  if (document.getElementById('exportNameOverlay').style.display === 'flex') {
+    if (key === 'Enter') { submitExport(); e.preventDefault(); }
+    else if (key === 'Escape') { closeExportName(); e.preventDefault(); }
+    else if (key === 'Tab') {
+      var controls = [document.getElementById('exportFilename'), document.getElementById('exportNameSave'), document.getElementById('exportNameCancel')].filter(function(el) { return !el.disabled; });
+      if (controls.length) {
+        var index = controls.indexOf(document.activeElement);
+        controls[(index + (e.shiftKey ? controls.length - 1 : 1)) % controls.length].focus();
+      }
+      e.preventDefault();
+    }
+    return;
+  }
+
   // Confirm overlay takes priority
   if (document.getElementById('confirmOverlay').style.display === 'flex') {
     if (key === 'Enter') { doConfirmAction(); e.preventDefault(); }
@@ -5091,7 +5552,7 @@ document.addEventListener('keydown', function(e) {
 
   // Text entry belongs to Meridian. Preserve normal typing, but let Escape
   // retain Tailor's modal/sub-screen/close behavior.
-  var inputFocused = document.activeElement && (document.activeElement.tagName === 'INPUT');
+  var inputFocused = document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT');
   if (inputFocused && key !== 'Escape') return;
 
   closeAllDropdowns();
@@ -5444,7 +5905,7 @@ function filterWigCycleDropdown() {
 
   var filtered = _wigCycleItems.filter(function(item) {
     return !query || item.name.toLowerCase().indexOf(query) !== -1;
-  }).sort(function(a, b) { return a.name.localeCompare(b.name); });
+  });
 
   if (filtered.length === 0) {
     list.innerHTML = '<div style="padding:11px 16px; color:var(--text-dim); font-size:15px;">No matches</div>';
@@ -6395,11 +6856,12 @@ function updateDeleteButtonState() {
     'tailorDeleteOutfit','tailorCopyOutfit','tailorCheckOutfitUsage','tailorRequestArmorPlugins',
     'tailorRequestArmorForPlugin','tailorEquipArmorItem','tailorUnequipArmorItem',
     'tailorBeginCreateOutfit','tailorSaveOutfit','tailorCancelCreateOutfit','tailorClose',
-    'tailorRequestOutfitData','tailorUpdateOutfit','tailorRequestAllCategories',
+    'tailorRequestOutfitData','tailorPreviewOutfit','tailorUpdateOutfit','tailorRequestAllCategories',
     'tailorAddCategory','tailorRenameCategory','tailorDeleteCategory',
     'tailorRequestBlacklist','tailorBlacklistPlugin','tailorUnblacklistPlugin','tailorClearBlacklist',
     'tailorRequestSituations','tailorConfirmSituationCycle','tailorClearSituation',
-    'tailorClearAllSituations','tailorToggleSituationRandom',
+    'tailorRequestTransferData','tailorExportOutfits','tailorImportOutfits',
+    'tailorClearAllSituations','tailorToggleSituationRandom','tailorSetAdventuringArmorType',
     'tailorPreviewViewport','tailorPreviewRotate',
     'wiggySelectCategory','wiggyCycleNext','wiggyCyclePrev','wiggyCycleToIndex',
     'wiggyConfirmCycle','wiggyCancelCycle','wiggyResetWig','wiggyRequestMods',
@@ -6434,12 +6896,12 @@ function updateDeleteButtonState() {
   ];
 
   var MOCK_OUTFITS = [
-    {id:1, name:'Steel Plate Set',     categories:['Heavy Armor'], armorRating:120, hasEnchanted:false},
+    {id:1, name:'Steel Plate Set',     categories:['Heavy Armor','Adventuring'], armorRating:120, hasEnchanted:false},
     {id:2, name:'Daedric Set',         categories:['Heavy Armor'], armorRating:280, hasEnchanted:true},
-    {id:3, name:'Glass Set',           categories:['Light Armor'], armorRating:150, hasEnchanted:false},
+    {id:3, name:'Glass Set',           categories:['Light Armor','Adventuring'], armorRating:150, hasEnchanted:false},
     {id:4, name:'Thieves Guild Set',   categories:['Light Armor','Thieves Guild'], armorRating:90, hasEnchanted:false},
     {id:5, name:'Tavern Dress (Red)',  categories:['Clothing','Tavern Wear'], armorRating:0, hasEnchanted:false},
-    {id:6, name:'College Robes',       categories:['Clothing','Battle Mage'], armorRating:30, hasEnchanted:true},
+    {id:6, name:'College Robes',       categories:['Clothing','Battle Mage','Adventuring'], armorRating:30, hasEnchanted:true},
     {id:7, name:'Vampire Royal Garb',  categories:['Clothing','Vampire'], armorRating:60, hasEnchanted:true},
     {id:8, name:'Forsworn Furs',       categories:['Light Armor','Forsworn'], armorRating:75, hasEnchanted:false},
     {id:9, name:'Imperial Officer',    categories:['Heavy Armor'], armorRating:140, hasEnchanted:false},
@@ -6461,10 +6923,53 @@ function updateDeleteButtonState() {
   ];
 
   var MOCK_SITUATION_DATA = {
-    1: {outfitName:'Daedric Set',      categoryName:'Heavy Armor', isRandom:false},
-    2: {outfitName:'Tavern Dress (Red)',categoryName:'Tavern Wear', isRandom:true},
-    3: {outfitName:'',                  categoryName:'',           isRandom:false},
-    4: {outfitName:'',                  categoryName:'',           isRandom:false}
+    adventuringId:1, adventuringName:'Steel Plate Set', adventuringAR:120,
+    adventuringArmorType:'any', adventuringRandom:false,
+    townRandom:true, townCatCount:2, homeCatCount:2, sleepCatCount:2
+  };
+  function sendMockSituations() {
+    var type = MOCK_SITUATION_DATA.adventuringArmorType;
+    var eligible = MOCK_OUTFITS.filter(function(outfit) {
+      return type === 'any' || outfit.categories.indexOf(_adventuringArmorNames[type]) >= 0;
+    });
+    var counts = {};
+    MOCK_CATEGORIES.forEach(function(category) {
+      counts[category.id] = eligible.filter(function(outfit) { return outfit.categories.indexOf(category.name) >= 0; }).length;
+    });
+    MOCK_SITUATION_DATA.adventuringCatCount = counts[4];
+    MOCK_SITUATION_DATA.adventuringCategoryCounts = counts;
+    MOCK_SITUATION_DATA.adventuringHasDressOptions = eligible.length > 0;
+    MOCK_SITUATION_DATA.adventuringAssignedCompatible = eligible.some(function(outfit) { return outfit.id === MOCK_SITUATION_DATA.adventuringId; });
+    tailorSetSituationData(Object.assign({}, MOCK_SITUATION_DATA));
+  }
+  window.tailorRequestSituations = sendMockSituations;
+  window.tailorSetAdventuringArmorType = function(arg) {
+    MOCK_SITUATION_DATA.adventuringArmorType = JSON.parse(arg).armorType;
+    sendMockSituations();
+  };
+  window.tailorToggleSituationRandom = function(arg) {
+    var data = JSON.parse(arg);
+    MOCK_SITUATION_DATA[_situationNames[data.situation].toLowerCase() + 'Random'] = data.random;
+    sendMockSituations();
+  };
+
+  var MOCK_TRANSFER_FILES = ['Adventurers.json', 'vanillaoutfits.json', 'Evening Wear.json'];
+  function sendMockTransferData() {
+    tailorSetTransferData({files:MOCK_TRANSFER_FILES, outfits:MOCK_OUTFITS.map(function(outfit) {
+      var keys = Object.keys(_transferLabels).filter(function(key) { return outfit.categories.indexOf(_transferLabels[key]) >= 0; });
+      return {id:outfit.id, name:outfit.name, categories:keys, itemCount:5};
+    }).filter(function(outfit) { return outfit.categories.length; })});
+  }
+  window.tailorRequestTransferData = sendMockTransferData;
+  window.tailorExportOutfits = function(arg) {
+    var data = JSON.parse(arg);
+    MOCK_TRANSFER_FILES.push(data.name + '.json');
+    tailorTransferResult({ok:true, operation:'export', file:data.name + '.json', exported:data.outfitIds.length});
+    sendMockTransferData();
+  };
+  window.tailorImportOutfits = function(arg) {
+    tailorTransferResult({ok:true, operation:'import', file:JSON.parse(arg).file, added:8, duplicates:2,
+      skipped:[{name:'Snowbound Scout', reason:'Missing armor: Scout Boots (WinterArmors.esp, local ID 2186)'}]});
   };
 
   // --- 3. Bootstrap mock data after panels render ---
@@ -6482,7 +6987,7 @@ function updateDeleteButtonState() {
       tailorSetOutfits(MOCK_OUTFITS);
       tailorSetCycleState({name:'Steel Plate Set', index:0, total:3, items:MOCK_CYCLE_ITEMS, armorRating:120});
       tailorSetBlacklistData(MOCK_BLACKLIST);
-      tailorSetSituationData(MOCK_SITUATION_DATA);
+      sendMockSituations();
       tailorSetArmorPlugins(['Skyrim.esm', 'Dragonborn.esm', 'TownClothing.esp']);
 
       if (typeof wiggySetTarget === 'function') {
@@ -6565,6 +7070,8 @@ function updateDeleteButtonState() {
     'categories':      function() { showScreen('categories'); },
     'blacklist':       function() { showScreen('blacklist'); },
     'situations':      function() { showScreen('situations'); },
+    'export':          function() { openTransferScreen('export'); },
+    'import':          function() { openTransferScreen('import'); },
     'wig-cycle':       function() { wigShowScreen('wigCycle'); document.getElementById('wigCycleCategory').textContent = 'Female · Clothing';
                          wiggySetCycleState({name:'KSBelle Long', index:0, total:6}); },
     'wig-library':     function() { wigShowScreen('wigLibrary'); },
@@ -6619,7 +7126,7 @@ function updateDeleteButtonState() {
     {label:'Outfit', items:[
       ['#main','Main Panel'],['#cycle','Dressing Room'],['#library','Manage Outfits'],
       ['#create','Create / Edit'],['#categories','Categories'],['#blacklist','Blacklist'],
-      ['#situations','Situations']
+      ['#situations','Situations'],['#export','Export Outfits'],['#import','Import Outfits']
     ]},
     {label:'Wig', items:[
       ['#wig-cycle','Hair Dresser'],['#wig-library','Manage Wigs'],['#wig-add','Add Wigs'],

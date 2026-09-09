@@ -36,7 +36,7 @@ public:
     void SendAllCategories();
     void SendSituationData();
     void SendOutfitUsage(int outfitId);
-    void RestoreCorrectOutfit(RE::Actor* actor);
+    void SendTransferData();
 
     // --- Wig C++ → JS ---
     void SendWigTargetUpdate();

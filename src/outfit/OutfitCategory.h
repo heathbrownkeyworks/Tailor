@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include "outfit/OutfitArmorType.h"
 
 struct OutfitCategory
 {
@@ -11,4 +12,5 @@ struct OutfitCategory
     bool             isDefault = false;
     std::string      situationType;  // "", "adventuring", "town", "home", "sleep"
     std::vector<int> outfitIds;      // references to CustomOutfit IDs in OutfitStore
+    OutfitArmorType armorType = OutfitArmorType::Any;  // Stable identity; Any = no armor classification.
 };

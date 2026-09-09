@@ -4,7 +4,12 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.4.0**
+Current source version: **2.4.1**
+
+## Changes in 2.4.1
+
+- Fixed incorrect sleep detection that could leave awake NPCs wearing sleep outfits.
+- Preserves early sleep outfit changes and existing libraries and assignments.
 
 ## Changes from 2.3.7 to 2.4.0
 
@@ -49,8 +54,8 @@ OBody NG and SmoothCam are optional integrations. Tailor continues without
 them.
 
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
-The 2.4.0 release has passed native builds and automated checks. Gameplay testing
-was reported successful for the tested configuration.
+The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
+Gameplay retesting of this correction is pending.
 
 ## Building
 

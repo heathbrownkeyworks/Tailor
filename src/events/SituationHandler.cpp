@@ -16,7 +16,7 @@ namespace
 
     bool IsSleepSituation(RE::Actor* actor)
     {
-        if (Tailor::Situations::IsSleepState(actor->GetSitSleepState())) return true;
+        if (Tailor::Situations::IsSleepState(Tailor::Situations::ReadSleepState(actor))) return true;
 
         // Preserve furniture-based support for beds with unusual state/idle
         // behavior. Native sleep intent does not require an occupied bed yet.
@@ -76,7 +76,7 @@ OutfitSituation SituationHandler::EvaluateSituation(RE::Actor* actor) const
     // Priority 1: sleep intent, entry, sleep and waking; no idle names required.
     if (IsSleepSituation(actor)) {
         logger::info("EvaluateSituation: {} sleepState={} → Sleep",
-            actor->GetDisplayFullName(), static_cast<int>(actor->GetSitSleepState()));
+            actor->GetDisplayFullName(), static_cast<int>(Tailor::Situations::ReadSleepState(actor)));
         return OutfitSituation::Sleep;
     }
 
@@ -356,7 +356,7 @@ void SituationHandler::PollSleepStates()
         it->second = sleeping;
         if (wasSleeping != sleeping) {
             logger::info("SituationHandler: {} sleep transition {} -> {} (nativeState={})",
-                actor->GetDisplayFullName(), wasSleeping, sleeping, static_cast<int>(actor->GetSitSleepState()));
+                actor->GetDisplayFullName(), wasSleeping, sleeping, static_cast<int>(Tailor::Situations::ReadSleepState(actor)));
             ApplyForSituation(actor);
         }
     }
@@ -542,7 +542,7 @@ RE::BSEventNotifyControl SituationHandler::ProcessEvent(
     }
 
     bool entering = (event->type == RE::TESFurnitureEvent::FurnitureEventType::kEnter);
-    auto sleepState = actor->GetSitSleepState();
+    auto sleepState = Tailor::Situations::ReadSleepState(actor);
     logger::info("SituationHandler: {} {} furniture (sleepState={})",
         actor->GetDisplayFullName(), entering ? "entered" : "exited",
         static_cast<int>(sleepState));

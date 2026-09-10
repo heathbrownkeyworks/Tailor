@@ -32,6 +32,22 @@ namespace Tailor::Preview
         return !camera->IsInFreeCameraMode();
     }
 
+    template<class Camera, class State>
+    bool EnterPreviewCamera(Camera* camera, State* freeState, State* thirdState, bool playerTarget)
+    {
+        if (!camera || !freeState) return false;
+        if (playerTarget && camera->IsInFirstPerson()) {
+            if (!thirdState) return false;
+            // ForceThirdPerson is a request, not a completed transition.
+            // Enter the actual state before freecam captures which
+            // player skeleton should render (the SPIM/Menu Studio transition).
+            camera->SetState(thirdState);
+            if (camera->currentState.get() != thirdState) return false;
+        }
+        camera->ToggleFreeCameraMode(false);
+        return camera->currentState.get() == freeState;
+    }
+
     // Hold locomotion only. Actor processing, life state and animation graphs
     // remain owned by Skyrim and other mods throughout the preview.
     class ActorMovementHold

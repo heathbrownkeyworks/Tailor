@@ -74,6 +74,7 @@ void WigAssignments::Load()
                 }
 
                 ActorWigState wigState;
+                if (actorForm->GetFormID() == 0x14) continue;
 
                 // Wig fields are optional (color-only assignments have no wig)
                 auto wigFormIdStr = entry.value("wigFormId", std::string{});
@@ -138,6 +139,7 @@ void WigAssignments::Save() const
     if (!dataHandler) return;
 
     for (auto& [actorRuntimeId, state] : _assignments) {
+        if (actorRuntimeId == 0x14) continue;
         // Decompose runtime FormID to local FormID + plugin (same method as OutfitAssignments)
         auto* actorForm = RE::TESForm::LookupByID(actorRuntimeId);
         if (!actorForm) {
@@ -383,6 +385,7 @@ void WigAssignments::LoadSituations()
                 }
 
                 WigSituationalAssignment wsa;
+                if (actorForm->GetFormID() == 0x14) continue;
                 if (entry.contains("adventuring")) wsa.adventuring = resolveWigEntry(entry["adventuring"]);
                 if (entry.contains("town"))        wsa.town = resolveWigEntry(entry["town"]);
                 if (entry.contains("home"))        wsa.home = resolveWigEntry(entry["home"]);
@@ -432,6 +435,7 @@ void WigAssignments::SaveSituations() const
     if (!dataHandler) return;
 
     for (auto& [actorRuntimeId, wsa] : _situations) {
+        if (actorRuntimeId == 0x14) continue;
         auto* actorForm = RE::TESForm::LookupByID(actorRuntimeId);
         if (!actorForm) continue;
 

@@ -40,7 +40,9 @@ namespace Tailor::Wigs
         if (!manager) return false;
         // CommonLib names PreventRemoval "forceEquip". ExtraCannotWear means
         // prevent removal when worn, and prevent equip when unworn.
-        manager->EquipObject(actor, armor, nullptr, 1, nullptr, true, true, false, false);
+        // Complete under the caller's change/recovery guard. A queued wig could
+        // otherwise land after a subsequent helmet equip or wig-screen exit.
+        manager->EquipObject(actor, armor, nullptr, 1, nullptr, false, true, false, true);
         return true;
     }
 

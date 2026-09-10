@@ -4,6 +4,7 @@
 #include "wig/WigCategory.h"
 #include "wig/WigLibrary.h"
 #include "wig/WigRecoveryPolicy.h"
+#include "wig/HeadwearEquipment.h"
 
 #include <mutex>
 #include <optional>
@@ -48,9 +49,10 @@ public:
 
     // Disable and cancel queued recovery before loading; enable only once ready.
     void SetRecoveryEnabled(bool enabled);
+    void PreparePlayerForGameLoad();
 
     // Target — set by TailorUI when opening, delegates to OutfitManager
-    void       SetTarget(RE::Actor* actor);
+    bool       SetTarget(RE::Actor* actor);
     RE::Actor* GetTarget() const;
 
     // NFF (Nether's Follower Framework) compatibility
@@ -60,6 +62,10 @@ public:
     // Wig operations
     bool EquipWig(RE::Actor* actor, const WigEntry& wig);
     bool ResetWig(RE::Actor* actor);
+    bool SetWigScreen(bool enabled);
+    bool IsWigScreen(RE::Actor* actor) const;
+    bool PrepareForOutfitChange(RE::Actor* actor, const std::vector<RE::TESForm*>& items);
+    void ClearHeadwearForGameLoad();
 
     // Preview — temporary equip for Add Wig browsing
     void StartPreview();
@@ -144,6 +150,9 @@ private:
     std::optional<PreviewState>  _previewState;
     mutable std::recursive_mutex _mutex;
     Tailor::Wigs::WigRecoveryPolicy _wigRecovery;
+    Tailor::Wigs::HeadwearPreview _headwearPreview;
+    RE::ActorHandle _headwearActor;
+    bool _wigScreen = false;
 
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _originalHairColors;
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _cachedColorForms;

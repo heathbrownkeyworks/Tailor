@@ -35,6 +35,13 @@ void Settings::Load()
 
     _grantPower = GetPrivateProfileIntA("Power", "GrantPower", 1, file.c_str()) != 0;
     _autoFavorite = GetPrivateProfileIntA("Power", "AutoFavorite", 1, file.c_str()) != 0;
+    _controllerEnabled = GetPrivateProfileIntA("Controller", "Enabled", 1, file.c_str()) != 0;
+    _controllerShortcutEnabled = GetPrivateProfileIntA("Controller", "ShortcutEnabled", 1, file.c_str()) != 0;
+    char control[64]{};
+    GetPrivateProfileStringA("Controller", "Button", "Start", control, sizeof(control), file.c_str());
+    _controllerButton = control;
+    GetPrivateProfileStringA("Controller", "Modifier", "LeftShoulder", control, sizeof(control), file.c_str());
+    _controllerModifier = control;
 
     logger::info("Settings: ModifierKey=0x{:02X}, ActivateKey=0x{:02X}, RefreshMorphs={}, GrantPower={}, AutoFavorite={}",
         _modifierKey, _activateKey, _refreshMorphs, _grantPower, _autoFavorite);
@@ -109,6 +116,18 @@ GrantPower=1
 ; Only applies once — if you later remove it from Favorites, it stays removed.
 ; Default: 1 (enabled)
 AutoFavorite=1
+
+[Controller]
+; Optional Meridian.Input/1 support. Older runtimes keep keyboard/mouse use.
+Enabled=1
+; Default opener: LB + Menu/Start. Set ShortcutEnabled=0 to disable only the opener.
+ShortcutEnabled=1
+Modifier=LeftShoulder
+Button=Start
+; Digital names: DpadUp/Down/Left/Right, Start, Back, LeftThumb, RightThumb,
+; LeftShoulder, RightShoulder, South (A), East (B), West (X), North (Y).
+; Modifier may also be None. LB+Y and RB+Back are reserved for Horde/Romantasy.
+; Conflicts reported by Meridian disable this opener without changing other mods.
 )";
 
     logger::info("Settings: Created default INI at {}", path);

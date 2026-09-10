@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MeridianUIAPI/ViewAPI.h"
+#include "MeridianUIAPI/InputAPI.h"
 #include "outfit/OutfitManager.h"
 #include "preview/TailorPreviewSession.h"
 #include "ui/GameMenuVisibility.h"
@@ -23,6 +24,7 @@ public:
     bool IsOpen() const;
     bool HasFocus() const;
     void SendPreviewState();
+    void ShowEquipmentWarning(RE::Actor* actor, std::string_view message);
 
     // --- Outfit C++ → JS ---
     void SendTargetUpdate();
@@ -66,6 +68,8 @@ public:
 
 private:
     TailorUI() = default;
+    void ConfigureController();
+    Meridian::UI::Input::ShortcutHandle _controllerShortcut = 0;
 
     std::filesystem::path GetBlacklistPath() const;
     std::filesystem::path GetWigBlacklistPath() const;

@@ -2,12 +2,15 @@
 #include "outfit/OutfitAssignments.h"
 #include "outfit/PreviewOutfitCleanup.h"
 #include "outfit/PreviewEquipmentDiagnostics.h"
+#include "outfit/ArmorEquipmentStatus.h"
+#include "ui/TailorUI.h"
 #include "events/CellHandler.h"
 #include "events/SituationHandler.h"
 #include "Settings.h"
 #include "compat/OBodyCompat.h"
 #include "wig/WigManager.h"
 #include "preview/TailorPreviewSession.h"
+#include "player/PlayerEquipment.h"
 
 #include <chrono>
 #include <cstring>
@@ -24,6 +27,7 @@ void OutfitManager::NotifyOutfitChanged(RE::Actor* actor)
     if (!actor) return;
     Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
     WigManager::GetSingleton().ReEquipWigAfterOutfitChange(actor);
+    if (actor->IsPlayerRef()) return; // player morphs remain owned by normal equip events
 
     // OBody owns its morph and ORefit state through armor equip events. Do not
     // ask it to regenerate the actor's preset or send the generic refresh that
@@ -111,8 +115,9 @@ void OutfitManager::CaptureDefaultOutfitsAtDataLoad()
 void OutfitManager::UpdateTargetFromCrosshair()
 {
     auto* crosshairRef = RE::CrosshairPickData::GetSingleton();
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    _currentTarget = player && IsValidTarget(player) ? player->GetHandle() : RE::ActorHandle{};
     if (!crosshairRef) {
-        _currentTarget = RE::ActorHandle{};
         return;
     }
 
@@ -129,13 +134,12 @@ void OutfitManager::UpdateTargetFromCrosshair()
         }
     }
 
-    _currentTarget = RE::ActorHandle{};
 }
 
 RE::Actor* OutfitManager::GetTarget() const
 {
     auto actor = _currentTarget.get();
-    if (actor && !actor->IsPlayerRef()) {
+    if (actor) {
         return actor.get();
     }
     return nullptr;
@@ -165,7 +169,7 @@ std::string OutfitManager::GetTargetSex() const
 
 bool OutfitManager::IsValidTarget(RE::Actor* actor) const
 {
-    if (!actor || actor->IsDead() || actor->IsPlayerRef()) {
+    if (!actor || actor->IsDead()) {
         return false;
     }
 
@@ -262,11 +266,14 @@ bool OutfitManager::InitializeHiddenOutfitItems(
 bool OutfitManager::SetActorDefaultOutfit(
     RE::Actor* actor, RE::BGSOutfit* outfit, bool update3D) const
 {
-    if (!actor) return false;
+    if (!actor || actor->IsPlayerRef()) return false;
 
     auto* npc = actor->GetActorBase();
     if (!npc) return false;
 
+    std::vector<RE::TESForm*> incomingItems;
+    if (outfit) incomingItems.assign(outfit->outfitItems.begin(), outfit->outfitItems.end());
+    if (!WigManager::GetSingleton().PrepareForOutfitChange(actor, incomingItems)) return false;
     actor->InitInventoryIfRequired();
 
     const bool previewActor = _createSessionActive && actor->GetHandle() == _createSessionActor;
@@ -295,12 +302,57 @@ bool OutfitManager::SetActorDefaultOutfit(
     // Runtime outfit forms use temporary FF FormIDs. Tailor persists their
     // source records itself, so the transient pointer must not enter the save.
     npc->RemoveChange(RE::TESNPC::ChangeFlags::kDefaultOutfit);
+    QueueEquipmentAudit(actor, outfit);
     return hiddenInventoryReady && npc->defaultOutfit == outfit;
+}
+
+void OutfitManager::QueueEquipmentAudit(RE::Actor* actor, RE::BGSOutfit* outfit) const
+{
+    std::lock_guard lock(_mutex);
+    const auto actorId = actor->GetFormID();
+    const auto token = ++_nextEquipmentAudit;
+    _equipmentAudits.erase(actorId);
+    if (!outfit || outfit == _flushOutfit) return;
+    _equipmentAudits[actorId] = token;
+    const auto outfitId = outfit->GetFormID();
+    std::vector<RE::FormID> expected;
+    for (auto* item : outfit->outfitItems) if (item && item->IsArmor()) expected.push_back(item->GetFormID());
+    std::thread([this, handle = actor->GetHandle(), actorId, outfitId, token, expected = std::move(expected)]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        SKSE::GetTaskInterface()->AddTask([this, handle, actorId, outfitId, token, expected]() {
+            std::lock_guard auditLock(_mutex);
+            const auto it = _equipmentAudits.find(actorId);
+            if (it == _equipmentAudits.end() || it->second != token) return;
+            _equipmentAudits.erase(it);
+            const auto ref = handle.get();
+            auto* target = ref.get();
+            if (!target || !target->Is3DLoaded() || target->IsDead()) return;
+            auto* npc = target->GetActorBase();
+            if (!npc || !npc->defaultOutfit || npc->defaultOutfit->GetFormID() != outfitId) return;
+            if (WigManager::GetSingleton().IsWigScreen(target)) return; // intentionally displaced equipment
+            std::size_t incomplete = 0;
+            for (const auto id : expected) {
+                auto* armor = RE::TESForm::LookupByID<RE::TESObjectARMO>(id);
+                const auto status = Tailor::Outfits::InspectArmorEquipment(target, armor);
+                if (status.worn && status.compatibleModel && status.attached && status.graphVisible) continue;
+                ++incomplete;
+                logger::warn("Outfit equipment: actor={:08X} outfit={:08X} armor={:08X} name='{}' worn={} compatibleModel={} attached={} graphVisible={}",
+                    actorId, outfitId, id, armor ? armor->GetName() : "unresolved", status.worn,
+                    status.compatibleModel, status.attached, status.graphVisible);
+            }
+            logger::info("Outfit equipment audit: {:08X}, {} requested armor records, {} incomplete after settling", actorId, expected.size(), incomplete);
+            if (incomplete) {
+                Tailor::Outfits::LogPreviewEquipment(target, "incomplete-outfit-after-settle", token);
+                TailorUI::GetSingleton().ShowEquipmentWarning(target,
+                    "Some outfit pieces could not be equipped or displayed. Check for conflicting items.");
+            }
+        });
+    }).detach();
 }
 
 bool OutfitManager::SetActorSleepOutfit(RE::Actor* actor, RE::BGSOutfit* outfit) const
 {
-    if (!actor) return false;
+    if (!actor || actor->IsPlayerRef()) return false;
 
     auto* npc = actor->GetActorBase();
     if (!npc) return false;
@@ -472,6 +524,7 @@ void OutfitManager::BeginCreateOutfit(RE::Actor* actor)
 {
     std::lock_guard lock(_mutex);
     if (!actor) return;
+    if (!WigManager::GetSingleton().SetWigScreen(false)) return;
 
     if (_createSessionActive) {
         EndCreateOutfit();
@@ -481,6 +534,15 @@ void OutfitManager::BeginCreateOutfit(RE::Actor* actor)
         }
     }
 
+    if (actor->IsPlayerRef()) {
+        if (!Tailor::Player::Equipment::GetSingleton().BeginPreview(Tailor::Player::Channel::Outfit)) return;
+        _createSessionActor = actor->GetHandle();
+        _createSessionActive = true;
+        _createSessionEnding = false;
+        ++_createSessionGeneration;
+        _editOutfit.desiredItems.clear();
+        return;
+    }
     auto* npc = actor->GetActorBase();
     if (!npc) return;
     _preCreateOutfit = npc ? npc->defaultOutfit : nullptr;
@@ -527,17 +589,21 @@ void OutfitManager::TryEndCreateOutfit(std::uint64_t generation, int attempt)
         if (attempt == 0) {
             Tailor::Outfits::LogPreviewEquipment(sessionActor, "before-cleanup", generation);
         }
-        const bool defaultRestored = SetActorDefaultOutfit(sessionActor, _preCreateOutfit, true);
+        if (sessionActor->IsPlayerRef()) {
+            restored = Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Outfit, false);
+        } else {
+            const bool defaultRestored = SetActorDefaultOutfit(sessionActor, _preCreateOutfit, true);
 
-        // Restore the exact captured SOFT, including a real null.
-        const bool sleepRestored = SetActorSleepOutfit(sessionActor, _preCreateSleepOutfit);
-        restored = defaultRestored && sleepRestored;
-        if (restored) {
-            RestoreOutfitChangeFlags(
-                sessionActor->GetActorBase(),
-                _preCreateDefaultHadChange,
-                _preCreateSleepHadChange);
-            Tailor::Outfits::LogPreviewEquipment(sessionActor, "after-captured-restore", generation);
+            // Restore the exact captured SOFT, including a real null.
+            const bool sleepRestored = SetActorSleepOutfit(sessionActor, _preCreateSleepOutfit);
+            restored = defaultRestored && sleepRestored;
+            if (restored) {
+                RestoreOutfitChangeFlags(
+                    sessionActor->GetActorBase(),
+                    _preCreateDefaultHadChange,
+                    _preCreateSleepHadChange);
+                Tailor::Outfits::LogPreviewEquipment(sessionActor, "after-captured-restore", generation);
+            }
         }
     }
 
@@ -573,7 +639,8 @@ void OutfitManager::TryEndCreateOutfit(std::uint64_t generation, int attempt)
     _createSessionEnding = false;
     logger::info("EndCreateOutfit: preview outfit markers cleared and captured outfit state restored on {} (attempt {}; mesh detachment not verified)",
         actorPtr->GetDisplayFullName(), attempt + 1);
-    RestoreAssignedOutfit(actorPtr.get());
+    if (actorPtr->IsPlayerRef()) NotifyOutfitChanged(actorPtr.get());
+    else RestoreAssignedOutfit(actorPtr.get());
     Tailor::Outfits::LogPreviewEquipment(actorPtr.get(), "after-assignment-restore", generation);
     QueuePreviewDiagnostics(actorPtr->GetHandle(), generation);
 }
@@ -626,7 +693,7 @@ void OutfitManager::AddItemToCreateOutfit(RE::Actor* actor, const ArmorItem& ite
         return;
     }
 
-    if (!InitOutfitPair(_editOutfit)) return;
+    if (!actor->IsPlayerRef() && !InitOutfitPair(_editOutfit)) return;
 
     Tailor::Outfits::LogPreviewEquipment(actor, "before-preview-add", _createSessionGeneration);
     _editOutfit.desiredItems.push_back(form);
@@ -641,7 +708,7 @@ void OutfitManager::LoadCreateOutfitItems(RE::Actor* actor, const std::vector<Ar
 {
     if (!actor || !_createSessionActive || _createSessionEnding || actor->GetHandle() != _createSessionActor) return;
 
-    if (!InitOutfitPair(_editOutfit)) return;
+    if (!actor->IsPlayerRef() && !InitOutfitPair(_editOutfit)) return;
 
     Tailor::Outfits::LogPreviewEquipment(actor, "before-preview-load", _createSessionGeneration);
     _editOutfit.desiredItems.clear();
@@ -667,7 +734,7 @@ void OutfitManager::RemoveItemFromCreateOutfit(RE::Actor* actor, const ArmorItem
     if (!actor || !_createSessionActive || _createSessionEnding || actor->GetHandle() != _createSessionActor) return;
 
     auto* form = item.Resolve();
-    if (!form || !_editOutfit.primary) return;
+    if (!form || (!actor->IsPlayerRef() && !_editOutfit.primary)) return;
 
     Tailor::Outfits::LogPreviewEquipment(actor, "before-preview-remove", _createSessionGeneration);
     // Rebuild the outfit items without the removed form
@@ -690,6 +757,12 @@ void OutfitManager::RemoveItemFromCreateOutfit(RE::Actor* actor, const ArmorItem
 
 bool OutfitManager::FlushAndApplyOutfit(RE::Actor* actor, OutfitPair& pair)
 {
+    if (actor && actor->IsPlayerRef()) {
+        if (!WigManager::GetSingleton().PrepareForOutfitChange(actor, pair.desiredItems)) return false;
+        const bool applied = Tailor::Player::Equipment::GetSingleton().Apply(Tailor::Player::Channel::Outfit, pair.desiredItems);
+        if (applied) NotifyOutfitChanged(actor);
+        return applied;
+    }
     if (!actor || !InitOutfitPair(pair)) return false;
 
     auto* npc = actor->GetActorBase();
@@ -721,6 +794,7 @@ bool OutfitManager::FlushAndApplyOutfit(RE::Actor* actor, OutfitPair& pair)
     // outfits (e.g. Belted Tunic) from overriding equipped body-slot items.
     SetActorSleepOutfit(actor, incoming);
     std::swap(pair.primary, pair.alternate);
+    if (_createSessionActive && actor->GetHandle() == _createSessionActor) NotifyOutfitChanged(actor);
     return true;
 }
 
@@ -732,6 +806,20 @@ bool OutfitManager::ApplyCustomOutfit(
     bool automatic)
 {
     if (!actor) return false;
+
+    if (actor->IsPlayerRef()) {
+        std::vector<RE::TESForm*> items;
+        if (automatic && Tailor::Player::Equipment::GetSingleton().IsPreviewing()) return false;
+        for (const auto& item : outfit.items) {
+            auto* form = item.Resolve();
+            if (!form) return false;
+            items.push_back(form);
+        }
+        if (!WigManager::GetSingleton().PrepareForOutfitChange(actor, items)) return false;
+        const bool applied = Tailor::Player::Equipment::GetSingleton().Apply(Tailor::Player::Channel::Outfit, items);
+        if (applied) NotifyOutfitChanged(actor);
+        return applied;
+    }
 
     if (automatic &&
         !OBodyCompat::GetSingleton().PrepareActorForAutomaticOutfitChange(actor)) {
@@ -810,7 +898,10 @@ bool OutfitManager::StartCycle(int categoryId, OutfitSituation situation)
     }
 
     // Capture the NPC's current outfits so CancelCycle can restore them
-    auto* npc = target->GetActorBase();
+    if (!WigManager::GetSingleton().SetWigScreen(false)) return false;
+    if (target->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().BeginPreview(Tailor::Player::Channel::Outfit)) return false;
+    auto* npc = target->IsPlayerRef() ? nullptr : target->GetActorBase();
     _preCycleOutfit = npc ? npc->defaultOutfit : nullptr;
     _preCycleSleepOutfit = npc ? npc->sleepOutfit : nullptr;
     _preCycleDefaultHadChange = GetOutfitChangeFlag(
@@ -856,6 +947,7 @@ bool OutfitManager::StartCycle(int categoryId, OutfitSituation situation)
     auto* firstOutfit = store.GetOutfitById(state.outfitIds[0]);
     if (!firstOutfit || !ApplyCustomOutfit(target, *firstOutfit)) {
         logger::warn("StartCycle: failed to apply first outfit");
+        if (target->IsPlayerRef()) Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Outfit, false);
         RestoreOutfitChangeFlags(
             npc, _preCycleDefaultHadChange, _preCycleSleepHadChange);
         _preCycleOutfit = nullptr;
@@ -885,11 +977,13 @@ bool OutfitManager::CycleNext()
     if (!target) return false;
 
     auto& cs = *_cycleState;
+    const auto previousIndex = cs.index;
     cs.index = (cs.index + 1) % static_cast<int>(cs.outfitIds.size());
 
     auto* outfit = OutfitStore::GetSingleton().GetOutfitById(cs.outfitIds[cs.index]);
     if (!outfit || !ApplyCustomOutfit(target, *outfit)) {
         logger::warn("CycleNext: failed to apply outfit at index {}", cs.index);
+        cs.index = previousIndex;
         return false;
     }
 
@@ -907,11 +1001,13 @@ bool OutfitManager::CyclePrev()
     if (!target) return false;
 
     auto& cs = *_cycleState;
+    const auto previousIndex = cs.index;
     cs.index = (cs.index - 1 + static_cast<int>(cs.outfitIds.size())) % static_cast<int>(cs.outfitIds.size());
 
     auto* outfit = OutfitStore::GetSingleton().GetOutfitById(cs.outfitIds[cs.index]);
     if (!outfit || !ApplyCustomOutfit(target, *outfit)) {
         logger::warn("CyclePrev: failed to apply outfit at index {}", cs.index);
+        cs.index = previousIndex;
         return false;
     }
 
@@ -932,11 +1028,13 @@ bool OutfitManager::CycleToIndex(int index)
     int count = static_cast<int>(cs.outfitIds.size());
     if (count == 0 || index < 0 || index >= count) return false;
 
+    const auto previousIndex = cs.index;
     cs.index = index;
 
     auto* outfit = OutfitStore::GetSingleton().GetOutfitById(cs.outfitIds[cs.index]);
     if (!outfit || !ApplyCustomOutfit(target, *outfit)) {
         logger::warn("CycleToIndex: failed to apply outfit at index {}", cs.index);
+        cs.index = previousIndex;
         return false;
     }
 
@@ -970,6 +1068,8 @@ bool OutfitManager::ConfirmCycle(OutfitSituation situation)
     }
 
     // Persist the assignment
+    if (target->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Outfit, true)) return false;
     auto& assignments = OutfitAssignments::GetSingleton();
     if (static_cast<int>(situation) > 0) {
         assignments.AssignSituation(target->GetFormID(), situation, outfitId);
@@ -977,7 +1077,7 @@ bool OutfitManager::ConfirmCycle(OutfitSituation situation)
         assignments.Assign(target->GetFormID(), outfitId);
     }
 
-    assignments.CaptureOriginalOutfitState(
+    if (!target->IsPlayerRef()) assignments.CaptureOriginalOutfitState(
         target->GetFormID(),
         _preCycleOutfit,
         _preCycleSleepOutfit,
@@ -1008,6 +1108,7 @@ bool OutfitManager::ConfirmCycle(OutfitSituation situation)
 bool OutfitManager::RestoreCycleSnapshot(RE::Actor* actor)
 {
     if (!actor || !_preCycleStateCaptured) return false;
+    if (actor->IsPlayerRef()) return Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Outfit, false);
 
     bool defaultRestored = false;
     RE::BGSOutfit* restoredDefault = _preCycleOutfit;
@@ -1100,6 +1201,16 @@ std::string OutfitManager::GetCycleOutfitName() const
 bool OutfitManager::ResetOutfit(RE::Actor* actor)
 {
     if (!actor) return false;
+    if (actor->IsPlayerRef()) {
+        if (!Tailor::Player::Equipment::GetSingleton().RestoreBaseline(Tailor::Player::Channel::Outfit, true)) return false;
+        _cycleState.reset();
+        _preCycleStateCaptured = false;
+        auto& saved = OutfitAssignments::GetSingleton();
+        saved.Unassign(actor->GetFormID());
+        saved.Save();
+        NotifyOutfitChanged(actor);
+        return true;
+    }
 
     auto& assignments = OutfitAssignments::GetSingleton();
     const auto actorId = actor->GetFormID();
@@ -1148,6 +1259,7 @@ bool OutfitManager::ResetOutfit(RE::Actor* actor)
 bool OutfitManager::RestoreOriginalOutfit(RE::Actor* actor, bool automatic)
 {
     if (!actor || !actor->GetActorBase()) return false;
+    if (actor->IsPlayerRef()) return Tailor::Player::Equipment::GetSingleton().RestoreBaseline(Tailor::Player::Channel::Outfit);
     if (automatic && !OBodyCompat::GetSingleton().PrepareActorForAutomaticOutfitChange(actor)) return false;
     CapturePersistedOutfitStateIfNeeded(actor);
     auto& assignments = OutfitAssignments::GetSingleton();
@@ -1244,7 +1356,7 @@ void OutfitManager::ReApplyAllAssignments()
         auto* actor = form ? form->As<RE::Actor>() : nullptr;
         if (!actor) continue;
 
-        if (actor->Is3DLoaded()) {
+        if (actor->Is3DLoaded() || actor->IsPlayerRef()) {
             batch.push_back(actor->GetHandle());
         } else {
             deferred++;
@@ -1272,6 +1384,7 @@ void OutfitManager::ReApplyAllAssignments()
 void OutfitManager::PrepareForGameLoad()
 {
     std::lock_guard lock(_mutex);
+    _equipmentAudits.clear();
     ++_createSessionGeneration;
     _createSessionEnding = false;
 
@@ -1279,7 +1392,7 @@ void OutfitManager::PrepareForGameLoad()
     // about to revert the world, but no TESNPC may be left pointing at one of
     // Tailor's runtime forms when those forms are invalidated.
     if (_preCycleStateCaptured) {
-        if (auto* target = GetTarget()) {
+        if (auto* target = GetTarget(); target && !target->IsPlayerRef()) {
             if (auto* npc = target->GetActorBase()) {
                 if (!_preCycleDefaultWasActorPair) npc->defaultOutfit = _preCycleOutfit;
                 if (!_preCycleSleepWasActorPair) npc->sleepOutfit = _preCycleSleepOutfit;
@@ -1291,7 +1404,7 @@ void OutfitManager::PrepareForGameLoad()
 
     if (_createSessionActive) {
         auto actorPtr = _createSessionActor.get();
-        if (actorPtr) {
+        if (actorPtr && !actorPtr->IsPlayerRef()) {
             if (auto* npc = actorPtr->GetActorBase()) {
                 npc->defaultOutfit = _preCreateOutfit;
                 npc->sleepOutfit = _preCreateSleepOutfit;

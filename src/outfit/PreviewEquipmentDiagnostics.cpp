@@ -35,9 +35,11 @@ namespace Tailor::Outfits
             auto* inventory = actor->GetInventoryChanges(true);  // no initialization
             auto* root = actor->Get3D(false);
             Json snapshot{
-                {"build", "preview-diag-20260909-c"}, {"phase", phase},
+                {"build", "headwear-diag-20260910"}, {"phase", phase},
                 {"generation", generation}, {"actor", FormId(actor)},
                 {"name", actor->GetDisplayFullName()},
+                {"race", FormId(npc ? npc->GetRace() : nullptr)},
+                {"sex", npc ? static_cast<int>(npc->GetSex()) : -1},
                 {"defaultOutfit", FormId(npc ? npc->defaultOutfit : nullptr)},
                 {"sleepOutfit", FormId(npc ? npc->sleepOutfit : nullptr)},
                 {"inventoryAvailable", inventory != nullptr},
@@ -54,6 +56,7 @@ namespace Tailor::Outfits
                     if (!addon) continue;
                     addons.push_back({
                         {"id", FormId(addon)}, {"slots", addon->GetSlotMask().underlying()},
+                        {"validRace", npc && npc->GetRace() && addon->IsValidRace(npc->GetRace())},
                         {"maleModel", addon->bipedModels[0].GetModel()},
                         {"femaleModel", addon->bipedModels[1].GetModel()}
                     });
@@ -64,6 +67,11 @@ namespace Tailor::Outfits
                     {"slots", armor->GetSlotMask().underlying()}, {"addons", std::move(addons)}
                 };
             };
+            // Keep records for missing outfit entries too, so an entirely
+            // rejected piece can still be traced to its plugin and model.
+            if (npc && npc->defaultOutfit) {
+                for (auto* item : npc->defaultOutfit->outfitItems) recordArmor(item);
+            }
             if (auto* container = actor->GetContainer()) {
                 container->ForEachContainerObject([&](RE::ContainerObject& entry) {
                     if (entry.obj && entry.obj->Is(RE::FormType::Armor)) {

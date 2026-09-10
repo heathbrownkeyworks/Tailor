@@ -104,8 +104,8 @@ namespace Tailor::Preview
         if (_policy.IsActive()) return _target == a_target;
         auto target = a_target.get();
         auto* actor = target.get();
-        if (!actor || actor->IsDead() || actor->IsPlayerRef() || !actor->Is3DLoaded() || REL::Module::IsVR()) {
-            SetStatus(false, "Select a loaded NPC to preview.");
+        if (!actor || actor->IsDead() || !actor->Is3DLoaded() || REL::Module::IsVR()) {
+            SetStatus(false, "A loaded character is required for preview.");
             return false;
         }
         if (!_policy.Begin()) return false;
@@ -128,7 +128,7 @@ namespace Tailor::Preview
                 _policy.Acquire(Ownership::SavingDisabled);
             }
         }
-        SetStatus(false, "Preparing live NPC preview...");
+        SetStatus(false, "Preparing character preview...");
         (void)_policy.Activate();
         logger::info("Tailor live actor preview: target={:08X}, movement-only hold, AI enabled={} (unchanged)",
             actor->GetFormID(), actor->IsAIEnabled());
@@ -329,9 +329,11 @@ namespace Tailor::Preview
             _policy.Acquire(Ownership::ExternalCamera);
         }
 
-        camera->ToggleFreeCameraMode(false);
-        if (camera->currentState.get() != freeState) {
-            logger::warn("Tailor preview camera declined: free-camera transition failed");
+        // The saved return state predates any player-only third-person switch.
+        auto* thirdState = camera->GetRuntimeData().cameraStates[RE::CameraState::kThirdPerson].get();
+        if (!EnterPreviewCamera(camera, static_cast<RE::TESCameraState*>(freeState),
+                thirdState, a_actor->IsPlayerRef())) {
+            logger::warn("Tailor preview camera declined: third-person/free-camera transition failed");
             freeState->translation = _savedFreeTranslation;
             freeState->rotation = _savedFreeRotation;
             freeState->zUpDown = _savedFreeZUpDown;
@@ -347,6 +349,10 @@ namespace Tailor::Preview
             return false;
         }
 
+        if (a_actor->IsPlayerRef()) {
+            logger::info("Tailor player preview camera: returnState={}, previewState={}",
+                static_cast<int>(_savedCameraState->id), static_cast<int>(camera->currentState->id));
+        }
         freeState->SetInputEventHandlingEnabled(false);
         freeState->zUpDown = {};
         freeState->verticalDirection = 0;

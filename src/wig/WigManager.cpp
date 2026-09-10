@@ -1,6 +1,8 @@
 #include "wig/WigManager.h"
+#include "player/PlayerEquipment.h"
 #include "wig/WigEquipment.h"
 #include "events/SituationHandler.h"
+#include "events/CellHandler.h"
 #include "preview/TailorPreviewSession.h"
 
 #include <chrono>
@@ -166,16 +168,17 @@ void WigManager::RecoverWig(RE::ActorHandle handle, Tailor::Wigs::WigRecoveryPol
         (_cycleState || _previewState || Tailor::Preview::TailorPreviewSession::GetSingleton().IsActive());
     const auto count = ready && armor ? GetActorItemCount(actor, armor) : 0;
     const bool equipped = ready && armor && actor->GetWornArmor(armor->GetFormID());
-    const auto action = Tailor::Wigs::WigRecoveryPolicy::Decide(sameAssignment, ready, previewing, equipped, count);
+    const bool headwear = ready && armor && Tailor::Wigs::OutfitHidesWig(actor, armor);
+    const auto action = Tailor::Wigs::WigRecoveryPolicy::Decide(sameAssignment, ready, previewing || headwear, equipped, count);
     auto* equipManager = RE::ActorEquipManager::GetSingleton();
     if (action == Tailor::Wigs::RecoveryAction::Skip || !equipManager) {
         // A fast armor-change check can precede the gear refresh. Protect the
         // still-worn instance now, without causing an equip/unequip cycle.
-        if (sameAssignment && ready && !previewing && equipped) {
+        if (sameAssignment && ready && !previewing && !headwear && equipped) {
             Tailor::Wigs::EquipProtectedWig(actor, armor);
         }
-        logger::info("Wig recovery: skipped {:08X} on {:08X} (sameAssignment={}, ready={}, preview={}, worn={}, inventory={}, equipManager={})",
-            request.wigFormId, request.actorId, sameAssignment, ready, previewing, equipped, count, equipManager != nullptr);
+        logger::info("Wig recovery: skipped {:08X} on {:08X} (sameAssignment={}, ready={}, preview={}, headwear={}, worn={}, inventory={}, equipManager={})",
+            request.wigFormId, request.actorId, sameAssignment, ready, previewing, headwear, equipped, count, equipManager != nullptr);
         _wigRecovery.Finish(request);
         return;
     }
@@ -224,18 +227,100 @@ bool WigManager::IsNFFManaged(RE::Actor* actor) const
 
 // --- Target Management (delegated from TailorUI) ---
 
-void WigManager::SetTarget(RE::Actor* actor)
+bool WigManager::SetTarget(RE::Actor* actor)
 {
+    if (actor != GetTarget() && !SetWigScreen(false)) return false;
     _currentTarget = actor ? actor->GetHandle() : RE::ActorHandle{};
+    return true;
 }
 
 RE::Actor* WigManager::GetTarget() const
 {
     auto actor = _currentTarget.get();
-    if (actor && !actor->IsPlayerRef()) {
+    if (actor) {
         return actor.get();
     }
     return nullptr;
+}
+
+bool WigManager::IsWigScreen(RE::Actor* actor) const
+{
+    std::lock_guard lock(_mutex);
+    return _wigScreen && actor && actor->GetHandle() == _headwearActor;
+}
+
+bool WigManager::SetWigScreen(bool enabled)
+{
+    std::lock_guard lock(_mutex);
+    auto ref = _headwearActor.get();
+    auto* actor = ref.get();
+    if (enabled) {
+        if (_wigScreen && actor == GetTarget()) return true;
+        if (actor && !SetWigScreen(false)) return false;
+        actor = GetTarget();
+        if (!actor || !actor->Is3DLoaded()) return false;
+        _headwearActor = actor->GetHandle();
+        const auto change = _wigRecovery.BeginChange(actor->GetFormID());
+        const auto state = WigAssignments::GetSingleton().GetState(actor->GetFormID());
+        auto* wig = state ? state->currentWig.Resolve() : nullptr;
+        if (!_headwearPreview.Hide(actor, wig)) {
+            if (_headwearPreview.Restore(actor)) _headwearActor = {};
+            logger::warn("Headwear: wig preview blocked by protected equipment on {:08X}", actor->GetFormID());
+            return false;
+        }
+        _wigScreen = true;
+        ReEquipWigAfterOutfitChange(actor);
+    } else {
+        if (!actor) {
+            ClearHeadwearForGameLoad();
+            return true;
+        }
+        const auto change = _wigRecovery.BeginChange(actor->GetFormID());
+        // These restore the prior wig assignment while headgear is still held.
+        if (_previewState) EndPreview();
+        if (_cycleState) CancelCycle();
+        if (_previewState || _cycleState) return false;
+        const auto state = WigAssignments::GetSingleton().GetState(actor->GetFormID());
+        auto* wig = state ? state->currentWig.Resolve() : nullptr;
+        if (!_headwearPreview.Empty() && !Tailor::Wigs::SuspendWig(actor, wig)) return false;
+        _wigScreen = false;
+        if (!_headwearPreview.Restore(actor)) {
+            logger::warn("Headwear: exact outfit restoration still pending on {:08X}", actor->GetFormID());
+            return false;
+        }
+        _headwearActor = {};
+        ReEquipWigAfterOutfitChange(actor);
+    }
+    if (actor->IsPlayerRef()) Tailor::Player::Equipment::GetSingleton().RefreshModels();
+    Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
+    return true;
+}
+
+bool WigManager::PrepareForOutfitChange(RE::Actor* actor, const std::vector<RE::TESForm*>& items)
+{
+    std::lock_guard lock(_mutex);
+    if (!actor) return false;
+    if (actor->GetHandle() == _headwearActor &&
+        (_wigScreen || !_headwearPreview.Empty()) && !SetWigScreen(false)) return false;
+    const auto state = WigAssignments::GetSingleton().GetState(actor->GetFormID());
+    auto* wig = state ? state->currentWig.Resolve() : nullptr;
+    if (!wig) return true;
+    const auto change = _wigRecovery.BeginChange(actor->GetFormID());
+    for (auto* item : items) {
+        if (item && Tailor::Wigs::HeadwearConflicts(actor, wig, item->As<RE::TESObjectARMO>()))
+            return Tailor::Wigs::SuspendWig(actor, wig);
+    }
+    return true;
+}
+
+void WigManager::ClearHeadwearForGameLoad()
+{
+    std::lock_guard lock(_mutex);
+    _wigScreen = false;
+    _headwearActor = {};
+    _headwearPreview.Clear();
+    _previewState.reset();
+    _cycleState.reset();
 }
 
 // --- ArmorAddon Race Patching ---
@@ -347,6 +432,23 @@ bool WigManager::EquipWig(RE::Actor* actor, const WigEntry& wig)
     auto& assignments = WigAssignments::GetSingleton();
     auto existingState = assignments.GetState(actor->GetFormID());
     auto* oldArmor = existingState ? existingState->currentWig.Resolve() : nullptr;
+    const bool wigScreen = _wigScreen && actor->GetHandle() == _headwearActor;
+    if (wigScreen && !_headwearPreview.Hide(actor, oldArmor ? oldArmor : armor)) return false;
+    if (!wigScreen && Tailor::Wigs::OutfitHidesWig(actor, armor, oldArmor)) {
+        if (!Tailor::Wigs::SuspendWig(actor, oldArmor) || !Tailor::Wigs::SuspendWig(actor, armor)) return false;
+        if (!actor->IsPlayerRef() && oldArmor && oldArmor != armor) RemoveCurrentWig(actor);
+        assignments.SetAssignment(actor->GetFormID(), wig, oldArmor == armor && existingState && existingState->itemAdded);
+        logger::info("Headwear: saved wig '{}' suspended for outfit on {:08X}", wig.name, actor->GetFormID());
+        return true;
+    }
+    if (actor->IsPlayerRef()) {
+        EnsureArmorAddonRace(armor, npc->GetRace(), npc->GetSex());
+        if (!Tailor::Player::Equipment::GetSingleton().Apply(Tailor::Player::Channel::Wig, {armor})) return false;
+        assignments.SetAssignment(actor->GetFormID(), wig, true);
+        RetintActorHair(actor);
+        Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
+        return true;
+    }
     auto* equipManager = RE::ActorEquipManager::GetSingleton();
 
     // Add to the actor REFERENCE's inventory, never the TESNPC base container.
@@ -396,6 +498,13 @@ bool WigManager::ResetWig(RE::Actor* actor)
 
     std::lock_guard lock(_mutex);
     const auto wigChange = _wigRecovery.BeginChange(actor->GetFormID());
+    if (actor->IsPlayerRef()) {
+        if (!Tailor::Player::Equipment::GetSingleton().RestoreBaseline(Tailor::Player::Channel::Wig, true)) return false;
+        WigAssignments::GetSingleton().ClearAssignment(actor->GetFormID());
+        RetintActorHair(actor);
+        Tailor::Preview::TailorPreviewSession::GetSingleton().NotifyAppearanceChanged(actor);
+        return true;
+    }
     RemoveCurrentWig(actor);
     WigAssignments::GetSingleton().ClearAssignment(actor->GetFormID());
     WigAssignments::GetSingleton().Save();
@@ -409,14 +518,18 @@ bool WigManager::ResetWig(RE::Actor* actor)
 bool WigManager::StartCycling(RE::Actor* actor, WigCategory category)
 {
     std::lock_guard lock(_mutex);
+    if (!actor) return false;
 
     auto& library = WigLibrary::GetSingleton();
     auto wigs = library.GetCategory(category);
     if (wigs.empty()) {
         return false;
     }
+    if (!SetWigScreen(true)) return false;
 
     // Keep one alphabetical snapshot for navigation, display and confirmation.
+    if (actor->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().BeginPreview(Tailor::Player::Channel::Wig)) return false;
     std::stable_sort(wigs.begin(), wigs.end(), [](const WigEntry& a, const WigEntry& b) {
         return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
     });
@@ -441,7 +554,10 @@ bool WigManager::StartCycling(RE::Actor* actor, WigCategory category)
     }
 
     _cycleState = state;
-    EquipWig(actor, wigs[0]);
+    if (!EquipWig(actor, wigs[0])) {
+        CancelCycle();
+        return false;
+    }
 
     return true;
 }
@@ -458,12 +574,14 @@ std::optional<WigEntry> WigManager::CycleNext()
         return std::nullopt;
     }
 
+    const auto previousIndex = _cycleState->index;
     _cycleState->index = (_cycleState->index + 1) % static_cast<int32_t>(wigs.size());
     auto& wig = wigs[_cycleState->index];
 
     auto* target = GetTarget();
-    if (target) {
-        EquipWig(target, wig);
+    if (!target || !EquipWig(target, wig)) {
+        _cycleState->index = previousIndex;
+        return std::nullopt;
     }
 
     return wig;
@@ -482,12 +600,14 @@ std::optional<WigEntry> WigManager::CyclePrev()
     }
 
     auto count = static_cast<int32_t>(wigs.size());
+    const auto previousIndex = _cycleState->index;
     _cycleState->index = (_cycleState->index - 1 + count) % count;
     auto& wig = wigs[_cycleState->index];
 
     auto* target = GetTarget();
-    if (target) {
-        EquipWig(target, wig);
+    if (!target || !EquipWig(target, wig)) {
+        _cycleState->index = previousIndex;
+        return std::nullopt;
     }
 
     return wig;
@@ -505,12 +625,14 @@ std::optional<WigEntry> WigManager::CycleToIndex(int32_t index)
         return std::nullopt;
     }
 
+    const auto previousIndex = _cycleState->index;
     _cycleState->index = index;
     auto& wig = wigs[_cycleState->index];
 
     auto* target = GetTarget();
-    if (target) {
-        EquipWig(target, wig);
+    if (!target || !EquipWig(target, wig)) {
+        _cycleState->index = previousIndex;
+        return std::nullopt;
     }
 
     return wig;
@@ -560,6 +682,8 @@ std::vector<WigEntry> WigManager::GetCycleWigs() const
 void WigManager::ConfirmCycle()
 {
     std::lock_guard lock(_mutex);
+    if (auto* actor = GetTarget(); actor && actor->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Wig, true)) return;
     _cycleState.reset();
     logger::info("Wig cycling confirmed");
     WigAssignments::GetSingleton().Save();
@@ -593,6 +717,8 @@ void WigManager::ConfirmCycle(OutfitSituation situation)
     const auto wig = wigs[_cycleState->index];
 
     // Save to situational assignment (clears legacy)
+    if (target->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Wig, true)) return;
     auto& assignments = WigAssignments::GetSingleton();
     assignments.AssignSituation(target->GetFormID(), situation, wig);
     assignments.SaveSituations();
@@ -601,7 +727,9 @@ void WigManager::ConfirmCycle(OutfitSituation situation)
     logger::info("Wig cycling confirmed for situation {} — '{}'", static_cast<int>(situation), wig.name);
 
     // Apply correct wig for current situation (not necessarily the one just confirmed)
+    const bool keepWigScreen = IsWigScreen(target);
     SituationHandler::GetSingleton()->ForceApplyForSituation(target);
+    if (keepWigScreen) SetWigScreen(true);
 
     // Re-apply hair color
     auto state = assignments.GetState(target->GetFormID());
@@ -626,10 +754,15 @@ void WigManager::CancelCycle()
 
     auto* target = GetTarget();
     if (target) {
-        if (_cycleState->hadOriginal) {
-            EquipWig(target, _cycleState->originalWig);
+        if (target->IsPlayerRef()) {
+            if (!Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Wig, false)) return;
+            auto& saved = WigAssignments::GetSingleton();
+            if (_cycleState->hadOriginal) saved.SetAssignment(target->GetFormID(), _cycleState->originalWig, true);
+            else saved.ClearAssignment(target->GetFormID());
+        } else if (_cycleState->hadOriginal) {
+            if (!EquipWig(target, _cycleState->originalWig)) return;
         } else {
-            ResetWig(target);
+            if (!ResetWig(target)) return;
         }
         auto state = WigAssignments::GetSingleton().GetState(target->GetFormID());
         if (state && state->HasHairColor()) {
@@ -662,6 +795,9 @@ void WigManager::StartPreview()
 
     auto* target = GetTarget();
     if (!target) return;
+    if (!SetWigScreen(true)) return;
+    if (target->IsPlayerRef() &&
+        !Tailor::Player::Equipment::GetSingleton().BeginPreview(Tailor::Player::Channel::Wig)) return;
 
     PreviewState state;
     auto existing = WigAssignments::GetSingleton().GetAssignment(target->GetFormID());
@@ -676,6 +812,11 @@ void WigManager::StartPreview()
 bool WigManager::PreviewWig(RE::Actor* actor, const WigEntry& wig)
 {
     std::lock_guard lock(_mutex);
+    if (!actor || !SetWigScreen(true)) return false;
+    if (actor && actor->IsPlayerRef() && !_previewState) {
+        StartPreview();
+        if (!_previewState) return false;
+    }
     if (!_previewState) {
         PreviewState state;
         auto existing = WigAssignments::GetSingleton().GetAssignment(actor->GetFormID());
@@ -695,10 +836,15 @@ void WigManager::EndPreview()
 
     auto* target = GetTarget();
     if (target) {
-        if (_previewState->hadOriginal) {
-            EquipWig(target, _previewState->originalWig);
+        if (target->IsPlayerRef()) {
+            if (!Tailor::Player::Equipment::GetSingleton().EndPreview(Tailor::Player::Channel::Wig, false)) return;
+            auto& saved = WigAssignments::GetSingleton();
+            if (_previewState->hadOriginal) saved.SetAssignment(target->GetFormID(), _previewState->originalWig, true);
+            else saved.ClearAssignment(target->GetFormID());
+        } else if (_previewState->hadOriginal) {
+            if (!EquipWig(target, _previewState->originalWig)) return;
         } else {
-            ResetWig(target);
+            if (!ResetWig(target)) return;
         }
         auto state = WigAssignments::GetSingleton().GetState(target->GetFormID());
         if (state && state->HasHairColor()) {
@@ -906,23 +1052,12 @@ void WigManager::ReEquipAllAssignments()
             continue;
         }
 
+        if (actor->IsPlayerRef() || !actor->Is3DLoaded()) {
+            CellHandler::QueueWigReEquip(actor->GetHandle());
+            continue;
+        }
         if (state.currentWig.formId != 0 && !state.currentWig.plugin.empty()) {
-            auto* armor = state.currentWig.Resolve();
-            if (armor) {
-                auto* npc = actor->GetActorBase();
-                if (GetActorItemCount(actor, armor) <= 0) {
-                    actor->AddObjectToContainer(armor, nullptr, 1, nullptr);
-                    assignments.MarkItemAdded(actor->GetFormID());
-                }
-
-                if (npc) {
-                    EnsureArmorAddonRace(armor, npc->GetRace(), npc->GetSex());
-                }
-
-                if (actor->Is3DLoaded()) {
-                    Tailor::Wigs::EquipProtectedWig(actor, armor);
-                }
-            }
+            EquipWig(actor, state.currentWig);
         }
 
         if (state.HasHairColor()) {
@@ -951,6 +1086,8 @@ void WigManager::ReEquipAllAssignments()
         SituationHandler::GetSingleton()->ClearCachedSituation(actorFormId);
         if (actor->Is3DLoaded()) {
             SituationHandler::GetSingleton()->ApplyForSituation(actor);
+        } else if (actor->IsPlayerRef()) {
+            CellHandler::QueueWigReEquip(actor->GetHandle());
         }
 
         // Hair color (per-actor, not per-situation)
@@ -1006,7 +1143,7 @@ void WigManager::ReEquipWigAfterOutfitChange(RE::Actor* actor)
 
     if (state->currentWig.formId != 0 && !state->currentWig.plugin.empty()) {
         EquipWig(actor, state->currentWig);
-        logger::info("Re-equipped wig '{}' on {} after outfit change",
+        logger::info("Reconciled wig '{}' with headgear on {} after outfit change",
             state->currentWig.name, actor->GetDisplayFullName());
     }
 
@@ -1058,7 +1195,7 @@ void WigManager::RetintActorHair(RE::Actor* actor)
         return;
     }
 
-    auto* root = actor->Get3D();
+    auto* root = actor->Get3D(false);
     if (!root) {
         return;
     }
@@ -1152,6 +1289,10 @@ bool WigManager::ApplyHairColor(RE::Actor* actor, uint8_t r, uint8_t g, uint8_t 
         return false;
     }
 
+    if (actor->IsPlayerRef()) {
+        RetintActorHair(actor); // keep RaceMenu's base hair color and forms intact
+        return true;
+    }
     auto actorId = actor->GetFormID();
     {
         std::lock_guard lock(_mutex);
@@ -1215,6 +1356,12 @@ bool WigManager::ResetHairColor(RE::Actor* actor)
     }
 
     auto actorId = actor->GetFormID();
+    if (actor->IsPlayerRef()) {
+        std::lock_guard lock(_mutex);
+        ++_hairColorGeneration[actorId];
+        RetintActorHair(actor);
+        return true;
+    }
 
     RE::BGSColorForm* original = nullptr;
     {
@@ -1256,4 +1403,13 @@ void WigManager::ReApplyHairColor(RE::Actor* actor)
         static_cast<uint8_t>(state->hairColorR),
         static_cast<uint8_t>(state->hairColorG),
         static_cast<uint8_t>(state->hairColorB));
+}
+
+void WigManager::PreparePlayerForGameLoad()
+{
+    std::lock_guard lock(_mutex);
+    ++_hairColorGeneration[Tailor::Player::ReferenceID];
+    ++_hairRetintGeneration[Tailor::Player::ReferenceID];
+    _originalHairColors.erase(Tailor::Player::ReferenceID);
+    _cachedColorForms.erase(Tailor::Player::ReferenceID);
 }

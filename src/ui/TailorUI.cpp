@@ -1,4 +1,6 @@
 #include "ui/TailorUI.h"
+#include "ui/ControllerShortcut.h"
+#include "Settings.h"
 
 #include "events/SituationHandler.h"
 #include "outfit/OutfitAssignments.h"
@@ -17,6 +19,7 @@
 #include <stdexcept>
 
 extern Meridian::UI::View::IViewAPI* g_MeridianView;
+extern Meridian::UI::Input::IInputAPI* g_MeridianInput;
 
 namespace
 {
@@ -171,8 +174,14 @@ void TailorUI::Initialize()
     viewInfo.viewName = "main";
     viewInfo.startUrl = "mod://tailor/index.html";
     viewInfo.initiallyVisible = false;
-    viewInfo.onDOMReady = [](Meridian::UI::View::ViewHandle) {
+    viewInfo.onDOMReady = [](Meridian::UI::View::ViewHandle view) {
         logger::info("TailorUI: DOM ready");
+        SKSE::GetTaskInterface()->AddTask([view]() {
+            auto& ui = TailorUI::GetSingleton();
+            if (ui._view != view) return;
+            ui.ConfigureController();
+            g_MeridianView->ExecuteJavaScript(view, "window.TailorController?.init()");
+        });
     };
     _view = g_MeridianView->CreateView(&viewInfo);
 
@@ -1390,6 +1399,11 @@ void TailorUI::Initialize()
                     json.value("hairMode", false)
                 };
                 auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
+                if (!WigManager::GetSingleton().SetWigScreen(viewport.hairMode)) {
+                    logger::warn("TailorUI: headwear transition could not complete");
+                    TailorUI::GetSingleton().ShowEquipmentWarning(OutfitManager::GetSingleton().GetTarget(),
+                        "Headgear could not be changed. Another equipment rule may be protecting it.");
+                }
                 preview.SetViewport(viewport);
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorPreviewViewport: {}", e.what());
@@ -1418,6 +1432,40 @@ void TailorUI::Initialize()
     LoadWigBlacklist();
 
     logger::info("TailorUI: initialized with Meridian UI view");
+}
+
+void TailorUI::ConfigureController()
+{
+    if (!g_MeridianInput) return;
+    using namespace Meridian::UI::Input;
+    if (_controllerShortcut) g_MeridianInput->UnregisterShortcut(_controllerShortcut);
+    _controllerShortcut = 0;
+    const auto& settings = Settings::GetSingleton();
+    ViewInputConfig config{};
+    config.enabled = settings.GetControllerEnabled();
+    config.allowCursor = 1;
+    const auto configured = g_MeridianInput->ConfigureView(_view, &config);
+    if (configured != Result::Ok) {
+        logger::warn("Tailor controller configuration failed: {}", static_cast<unsigned>(configured));
+        return;
+    }
+    if (!config.enabled || !settings.GetControllerShortcutEnabled()) return;
+    const auto button = Tailor::Controller::ParseControl(settings.GetControllerButton());
+    const auto modifier = Tailor::Controller::ParseControl(settings.GetControllerModifier());
+    if (!button || !modifier || !Tailor::Controller::AllowedOpeningChord(*button, *modifier)) {
+        logger::warn("Tailor controller opener disabled: invalid or reserved chord {} + {}",
+            settings.GetControllerModifier(), settings.GetControllerButton());
+        return;
+    }
+    ShortcutInfo shortcut{};
+    shortcut.button = *button;
+    shortcut.modifier = *modifier;
+    // Meridian invokes this on the game thread and guards focus/menu eligibility.
+    shortcut.callback = [](ShortcutHandle, void*) { TailorUI::GetSingleton().Open(); };
+    const auto result = g_MeridianInput->RegisterShortcut(_view, &shortcut, &_controllerShortcut);
+    if (result == Result::Conflict) logger::warn("Tailor controller opener conflicts with another Meridian shortcut; choose a different [Controller] chord in Tailor.ini");
+    else logger::info("Tailor controller opener {} + {}: result {}", settings.GetControllerModifier(),
+        settings.GetControllerButton(), static_cast<unsigned>(result));
 }
 
 void TailorUI::Toggle()
@@ -1453,8 +1501,9 @@ void TailorUI::Open()
     outfitMgr.UpdateTargetFromCrosshair();
 
     auto* target = outfitMgr.GetTarget();
-    if (target) {
-        WigManager::GetSingleton().SetTarget(target);
+    if (!WigManager::GetSingleton().SetTarget(target)) {
+        logger::warn("TailorUI: previous headgear restoration must finish before changing target");
+        return;
     }
 
     SendTargetUpdate();
@@ -1521,6 +1570,8 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
         }
     }
     _gameMenus.Restore(RE::UI::GetSingleton());
+    // Also retry a pending exact-copy restoration on repeated close calls.
+    WigManager::GetSingleton().SetWigScreen(false);
     if (!wasOpen) {
         Tailor::Preview::TailorPreviewSession::GetSingleton().End(reason);
         return;
@@ -1619,6 +1670,7 @@ void TailorUI::SendTargetUpdate()
     // Resolve current outfit name for the target
     std::string currentOutfit;
     auto* target = mgr.GetTarget();
+    data["isPlayer"] = target && target->IsPlayerRef();
     if (target) {
         auto* assignment = OutfitAssignments::GetSingleton().GetAssignment(target->GetFormID());
         if (assignment) {
@@ -1733,6 +1785,14 @@ void TailorUI::SendTransferData()
     }
     const auto js = std::format("tailorSetTransferData({})", data.dump());
     g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+}
+
+void TailorUI::ShowEquipmentWarning(RE::Actor* actor, std::string_view message)
+{
+    if (!IsOpen() || actor != OutfitManager::GetSingleton().GetTarget() ||
+        !g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
+    const nlohmann::json text = message;
+    g_MeridianView->ExecuteJavaScript(_view, std::format("toast({}, 'danger')", text.dump()).c_str());
 }
 
 void TailorUI::SendOutfits()

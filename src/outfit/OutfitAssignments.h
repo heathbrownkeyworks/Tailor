@@ -8,6 +8,8 @@
 #include <vector>
 #include "outfit/OutfitArmorType.h"
 
+namespace Tailor::Player { class State; }
+
 enum class OutfitSituation : int { Adventuring = 1, Town = 2, Home = 3, Sleep = 4 };
 
 struct SituationalAssignment {
@@ -188,6 +190,7 @@ public:
     void RemoveOutfitFromAllAssignments(int outfitId);
 
 private:
+    friend class Tailor::Player::State;
     OutfitAssignments() = default;
 
     std::filesystem::path GetFilePath() const;

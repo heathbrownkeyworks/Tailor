@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "MeridianUIAPI/ViewDllLoader.h"
+#include "MeridianUIAPI/InputDllLoader.h"
 #include "Settings.h"
 #include "TailorAPI.h"
 #include "compat/OBodyCompat.h"
@@ -10,6 +11,7 @@
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
 #include "preview/TailorPreviewSession.h"
+#include "player/PlayerState.h"
 #include "wig/CustomColorLibrary.h"
 #include "wig/WigManager.h"
 #include "wig/WigAssignments.h"
@@ -21,6 +23,7 @@
 #include "keyhandler/keyhandler.h"
 
 Meridian::UI::View::IViewAPI* g_MeridianView = nullptr;
+Meridian::UI::Input::IInputAPI* g_MeridianInput = nullptr;
 
 namespace
 {
@@ -35,6 +38,8 @@ static void OnInputLoaded()
 
     Meridian::UI::Settings meridianSettings{};
     g_MeridianView = Meridian::UI::View::Query(&meridianSettings, "Tailor");
+    g_MeridianInput = Meridian::UI::Input::Query(&meridianSettings, "Tailor");
+    logger::info("Tailor: optional Meridian.Input/1 {}", g_MeridianInput ? "available" : "unavailable; keyboard/mouse retained");
 
     if (g_MeridianView) {
         logger::info("Tailor: Meridian.View/1 acquired during kInputLoaded");
@@ -130,10 +135,12 @@ static void OnPreLoadGame()
     sGameLoadGeneration.fetch_add(1);
     WigManager::GetSingleton().SetRecoveryEnabled(false);
     TailorUI::GetSingleton().CloseForLifecycle(Tailor::Preview::EndReason::PreLoadGame);
+    WigManager::GetSingleton().ClearHeadwearForGameLoad();
     OBodyCompat::GetSingleton().OnPreLoadGame();
     CellHandler::InvalidatePendingOutfitTasks();
     SituationHandler::GetSingleton()->ResetForGameLoad();
     OutfitManager::GetSingleton().PrepareForGameLoad();
+    Tailor::Player::State::Clear();
 }
 
 static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
@@ -162,9 +169,11 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         const auto generation = sGameLoadGeneration.fetch_add(1) + 1;
         WigManager::GetSingleton().SetRecoveryEnabled(false);
         TailorUI::GetSingleton().CloseForLifecycle(Tailor::Preview::EndReason::NewGame);
+        WigManager::GetSingleton().ClearHeadwearForGameLoad();
         CellHandler::InvalidatePendingOutfitTasks();
         SituationHandler::GetSingleton()->ResetForGameLoad();
         OutfitManager::GetSingleton().PrepareForGameLoad();
+        Tailor::Player::State::Clear();
         // Run after this message dispatch so OBody can finish its own new-game
         // transition first. OBody may remain ready and emit no new callback.
         SKSE::GetTaskInterface()->AddTask([generation]() {
@@ -195,8 +204,10 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
     }
 
     logger::info("{} v{}"sv, Plugin::NAME, Plugin::VERSION.string());
+    logger::info("Player support test candidate: playertest.4");
 
     SKSE::Init(a_skse);
+    Tailor::Player::State::Register();
     Tailor::Preview::TailorPreviewSession::InstallHooks();
     OBodyCompat::GetSingleton().DetectInstalled(a_skse);
     SmoothCamCompat::GetSingleton().DetectInstalled(a_skse);

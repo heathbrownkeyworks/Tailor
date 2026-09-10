@@ -15,6 +15,10 @@ public:
     bool GetRefreshMorphs() const { return _refreshMorphs; }
     bool GetGrantPower() const { return _grantPower; }
     bool GetAutoFavorite() const { return _autoFavorite; }
+    bool GetControllerEnabled() const { return _controllerEnabled; }
+    bool GetControllerShortcutEnabled() const { return _controllerShortcutEnabled; }
+    const std::string& GetControllerButton() const { return _controllerButton; }
+    const std::string& GetControllerModifier() const { return _controllerModifier; }
 
 private:
     Settings() = default;
@@ -26,4 +30,8 @@ private:
     bool _refreshMorphs = true;
     bool _grantPower = true;
     bool _autoFavorite = true;
+    bool _controllerEnabled = true;
+    bool _controllerShortcutEnabled = true;
+    std::string _controllerButton = "Start";
+    std::string _controllerModifier = "LeftShoulder";
 };

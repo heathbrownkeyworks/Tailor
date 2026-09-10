@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <link rel="stylesheet" href="output.css">
+<link rel="stylesheet" href="controller.css">
 <style>
 /* ================================================================
    Tailor — "Enchanted Obsidian" Theme
@@ -1636,8 +1637,8 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         <line x1="3" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="21" y2="12"/>
       </svg>
       <div style="font-size:17px; font-weight:300; color:var(--text-muted); line-height:1.6;">
-        Target an NPC to get started.<br>
-        Look at an NPC, then reopen this menu.
+        Character unavailable.<br>
+        Return to normal gameplay, then reopen Tailor.
       </div>
     </div>
 
@@ -1805,7 +1806,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     <div style="display:flex; gap:10px;">
       <button class="t-btn t-btn-primary" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleConfirm()">Set Outfit</button>
       <button class="t-btn" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleCancel()">Cancel</button>
-      <button class="t-btn t-btn-danger" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleReset()">Reset to Default</button>
+      <button id="cycleResetButton" class="t-btn t-btn-danger" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleReset()">Reset to Default</button>
     </div>
   </div>
 </div>
@@ -1864,7 +1865,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     </button>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" style="margin-right:8px;"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     <h2 class="t-title-ceremonial" style="font-size:16px;">Manage Outfits</h2>
-    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click a row</strong> to preview the outfit on the target NPC, or use the <strong style="color:var(--text)">Edit</strong> button to modify it. Leaving this screen restores the NPC's outfit. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
+    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click a row</strong> to preview the outfit on the selected character, or use the <strong style="color:var(--text)">Edit</strong> button to modify it. Leaving this screen restores the character's outfit. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
   </div>
 
   <div style="padding:16px 20px; flex:1; min-height:0; display:flex; flex-direction:column;">
@@ -2111,7 +2112,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
           <option value="light">Light Armor</option>
           <option value="clothing">Clothing</option>
         </select>
-        <span class="help-icon">?<span id="adventuringArmorHelp" class="help-tooltip">Saved for this NPC. Filters Adventuring Dress and Random using your outfit's <strong style="color:var(--text)">Heavy Armor, Light Armor, or Clothing categories</strong>. An outfit can belong to an armor category and Adventuring together. Any includes all types.</span></span>
+        <span class="help-icon">?<span id="adventuringArmorHelp" class="help-tooltip">Saved for this character. Filters Adventuring Dress and Random using your outfit's <strong style="color:var(--text)">Heavy Armor, Light Armor, or Clothing categories</strong>. An outfit can belong to an armor category and Adventuring together. Any includes all types.</span></span>
         <span id="adventuringArmorCount" class="sit-armor-count" aria-live="polite"></span>
       </div>
       <p id="adventuringArmorMessage" class="sit-armor-message" role="status"></p>
@@ -2584,12 +2585,13 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
           <line x1="12" y1="3" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="21"/>
           <line x1="3" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="21" y2="12"/>
         </svg>
-        <div class="hint-text">No one in the court.<br>Look at an NPC, then reopen this menu.</div>
+        <div class="hint-text">Character unavailable.<br>Return to normal gameplay, then reopen Tailor.</div>
       </div>
       <div id="npcStageStatus" class="stage-preview-status">Preparing NPC preview...</div>
     </div>
-    <div class="stage-rotation" role="group" aria-label="NPC rotation">
+    <div id="controllerPreviewScope" class="stage-rotation" role="group" aria-label="NPC rotation">
       <div class="stage-rotation-buttons">
+        <button id="controllerPreview" class="t-btn controller-only" type="button" aria-pressed="false" onclick="window.TailorController?.preview()">Rotate preview</button>
         <button id="previewRotateLeft" class="t-btn" type="button" aria-label="Rotate left" title="Hold to rotate left" aria-pressed="false">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a9 9 0 111 8M3 4v6h6"/></svg>
         </button>
@@ -2629,9 +2631,10 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
 
  <!-- Counter bar: hints | engraved nameplate | version + close -->
  <div class="court-bar">
-   <div class="bar-cluster">
+   <div class="bar-cluster keyboard-hint">
      <span class="fds-kbd">Shift</span>+<span class="fds-kbd">Z</span><span>&nbsp;close</span>
    </div>
+   <div id="controllerPrompts" aria-label="Controller controls"></div>
    <div class="bar-plate">
      <div id="barPlateName" class="bar-plate-name"></div>
      <div id="barPlateWearing" class="bar-plate-wearing" style="display:none;">
@@ -2640,7 +2643,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-      <span class="footer-ver">v2.4.3</span>
+      <span class="footer-ver">v2.5.0</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -2654,7 +2657,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     <div id="confirmMessage" style="font-size:14px; color:var(--fg-2); margin-bottom:20px; line-height:1.5;"></div>
     <div style="display:flex; gap:10px;">
       <button class="t-btn t-btn-danger" style="flex:1;" onclick="doConfirmAction()">Delete</button>
-      <button class="t-btn" style="flex:1;" onclick="closeConfirm()">Cancel</button>
+      <button id="controllerConfirmCancel" class="t-btn" style="flex:1;" onclick="closeConfirm()">Cancel</button>
     </div>
   </div>
  </div>
@@ -2759,6 +2762,7 @@ document.addEventListener('wheel', function (e) {
 //  Shared State
 // ============================================================
 var _targetName = '';
+var _targetIsPlayer = false;
 var _targetSex = '';
 var _activeTab = 'outfits';    // 'outfits' or 'wigs'
 var _confirmCallback = null;
@@ -2771,10 +2775,12 @@ var _promptCallback = null;
 function dockOpen() {
   var dock = document.getElementById('dock');
   if (dock) dock.classList.add('open');
+  window.TailorController?.open();
   schedulePreviewViewportReport();
 }
 
 function dockClose() {
+  window.TailorController?.close();
   var dock = document.getElementById('dock');
   if (dock) dock.classList.remove('open');
   var rdock = document.getElementById('rdock');
@@ -2879,6 +2885,7 @@ function sitSegGo(which) {
 }
 
 function railClose() {
+  window.TailorController?.close();
   window.tailorClose('');
 }
 
@@ -3351,7 +3358,7 @@ function updateStagePlate() {
   wearingEl.style.display = hasTarget ? 'flex' : 'none';
   if (!hasTarget) return;
   var outfitEl = document.getElementById('barPlateOutfit');
-  outfitEl.textContent = _currentOutfitName || 'Default Outfit';
+  outfitEl.textContent = _currentOutfitName || (_targetIsPlayer ? 'Original Gear' : 'Default Outfit');
   outfitEl.classList.toggle('dim', !_currentOutfitName);
   var wigEl = document.getElementById('barPlateWig');
   wigEl.textContent = wigTargetCurrentWig || 'Default Hair';
@@ -3360,6 +3367,8 @@ function updateStagePlate() {
 
 function tailorSetTarget(data) {
   _targetName = data.name || '';
+  _targetIsPlayer = !!data.isPlayer;
+  document.getElementById('cycleResetButton').textContent = _targetIsPlayer ? 'Restore Original Gear' : 'Reset to Default';
   _targetSex = data.sex || '';
   _currentOutfitName = data.currentOutfit || '';
   updateStagePlate();
@@ -3377,14 +3386,14 @@ function tailorSetTarget(data) {
   var currentOutfit = data.currentOutfit || '';
   if (hasTarget) {
     outfitDisplay.style.display = 'flex';
-    outfitNameEl.textContent = currentOutfit || 'Default Outfit';
+    outfitNameEl.textContent = currentOutfit || (_targetIsPlayer ? 'Original Gear' : 'Default Outfit');
     outfitNameEl.style.color = currentOutfit ? 'var(--fg-1)' : 'var(--fg-3)';
   } else {
     outfitDisplay.style.display = 'none';
   }
 
   // Track recent NPCs (session-only, JS in-memory)
-  if (hasTarget) recordRecentNpc(_targetName);
+  if (hasTarget && !_targetIsPlayer) recordRecentNpc(_targetName);
   renderRecentNpcs();
 
   // Show wig content if wigs tab is active
@@ -3894,6 +3903,7 @@ function renderWigMainScreen() {
       if (i >= 4 && !showMale) continue;
       var btn = document.createElement('button');
       var isDisabled = cat.count === 0;
+      btn.dataset.meridianId = 'wig-category-' + cat.index;
       btn.className = 'w-btn' + (isDisabled ? ' disabled' : '');
       btn.style.cssText = 'width:100%; justify-content:space-between;';
       var shortName = cat.name.replace(/^(Female|Male) - /, '');
@@ -3925,6 +3935,7 @@ function renderWigLibraryCats() {
     var cat = wigCategories[i];
     var isSelected = i === wigLibSelectedCategory;
     var item = document.createElement('div');
+    item.dataset.meridianId = 'wig-library-category-' + cat.index;
     item.style.cssText = 'flex:0 0 calc(50% - 3px); box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:6px; font-size:15px; cursor:pointer; transition:all 0.1s;'
       + (isSelected ? ' background:var(--surface-hover); border:1px solid var(--border-hover); color:var(--text);' : ' background:var(--surface); border:1px solid transparent; color:var(--text-muted);');
     if (isSelected) item.dataset.selected = '1';
@@ -3991,6 +4002,7 @@ function buildWigMoveDropdown(currentCatIndex, wig) {
   // position:fixed so the popover isn't clipped by the wig list's overflow-y:auto.
   var popover = document.createElement('div');
   popover.className = 'wig-move-popover';
+  popover.dataset.meridianId = 'wig-move-' + wig.plugin + ':' + wig.formId;
   popover.dataset.open = '0';
   popover.style.cssText = [
     'position:fixed','z-index:200',
@@ -4114,6 +4126,7 @@ function renderLibraryWigs() {
     visibleCount++;
     var isSelected = (i === wigLibSelectedWigRow);
     var item = document.createElement('div');
+    item.dataset.meridianId = 'wig-' + wig.plugin + ':' + wig.formId;
     item.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-radius:6px; transition:all 0.1s; cursor:pointer;'
       + (isSelected ? ' background:rgba(212,160,68,0.08); border-left:2px solid var(--amber);' : ' border-left:2px solid transparent;');
     item.onmouseover = (function(sel) { return function() { if (!sel) this.style.background = 'var(--surface-raised)'; }; })(isSelected);
@@ -4178,6 +4191,7 @@ function buildCategoryButtons() {
     var tr = document.createElement('tr');
     tr.className = 't-cat-row' + (hasOutfits ? '' : ' disabled');
     tr.dataset.catName = (cat.displayName || cat.name || '').toLowerCase();
+    tr.dataset.meridianId = 'category-' + cat.id;
 
     // Col 1: name (+ optional sub-label for situation pool)
     var tdName = document.createElement('td');
@@ -4258,7 +4272,7 @@ function startDressing(categoryId, categoryName) {
 //  Main Panel Actions
 // ============================================================
 
-function doResetOutfit() { window.tailorResetOutfit(''); toast('Outfit reset to default'); }
+function doResetOutfit() { window.tailorResetOutfit(''); toast(_targetIsPlayer ? 'Original gear restored' : 'Outfit reset to default'); }
 
 function openLibrary() {
   document.getElementById('outfitSearch').value = '';
@@ -4299,7 +4313,7 @@ function doCycleCancel() {
     showScreen('main');
   }
 }
-function doCycleReset() { window.tailorCancelCycle(''); window.tailorResetOutfit(''); showScreen('main'); toast('Outfit reset to default'); }
+function doCycleReset() { window.tailorCancelCycle(''); window.tailorResetOutfit(''); showScreen('main'); toast(_targetIsPlayer ? 'Original gear restored' : 'Outfit reset to default'); }
 
 // ============================================================
 //  Dressing Room: Searchable Dropdown
@@ -4465,7 +4479,7 @@ function endLibraryOutfitPreview() {
 }
 
 function previewLibraryOutfit(outfitId) {
-  if (!_targetName) { toast('Select an NPC to preview outfits'); return; }
+  if (!_targetName) { toast('Character unavailable for outfit preview'); return; }
   if (_libPreviewOutfitId === outfitId) return;
   if (!_libPreviewOutfitId) window.tailorBeginCreateOutfit('');
   _libPreviewOutfitId = outfitId;
@@ -4504,6 +4518,7 @@ function renderLibraryOutfits() {
     var row = document.createElement('div');
     row.className = 't-row';
     if (o.id === _libPreviewOutfitId) row.classList.add('preview-selected');
+    row.setAttribute('data-meridian-id', 'outfit-' + o.id);
     row.style.cursor = 'pointer';
     row.style.flexDirection = 'column';
     row.style.alignItems = 'stretch';
@@ -4667,6 +4682,7 @@ function filterArmorModDropdown() {
   filtered.forEach(function(name) {
     var item = document.createElement('div');
     item.className = 't-dropdown-item' + (name === _selectedArmorMod ? ' selected' : '');
+    item.dataset.meridianId = 'armor-plugin-' + name;
     item.textContent = name;
     item.onclick = function() {
       _selectedArmorMod = name;
@@ -4750,6 +4766,7 @@ function renderCreateArmorList() {
   filtered.forEach(function(a) {
     var row = document.createElement('div');
     row.className = 't-row';
+    row.setAttribute('data-meridian-id', 'armor-' + a.plugin + ':' + a.formId);
     var typeBadge = armorTypeBadge(a.type);
     row.innerHTML = itemArmorBadge(a)
       + enchantedName(a)
@@ -4799,6 +4816,7 @@ function renderOutfitItems() {
   _outfitItems.forEach(function(item) {
     var row = document.createElement('div');
     row.className = 't-row';
+    row.setAttribute('data-meridian-id', 'outfit-item-' + item.plugin + ':' + item.formId);
     var typeBadge = armorTypeBadge(item.type);
     row.innerHTML = enchantedName(item)
       + typeBadge
@@ -4888,6 +4906,7 @@ function renderCategoryList() {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; cursor:pointer; transition:all var(--dur-base);';
 
+    row.dataset.meridianId = 'edit-category-' + cat.id;
     var isSelected = cat.id === _selectedCatId;
     if (isSelected) {
       row.style.background = 'rgba(245,158,11,0.08)';
@@ -5024,6 +5043,7 @@ function renderBlacklistPlugins() {
     nameSpan.textContent = plugin.name;
 
     var actionBtn = document.createElement('button');
+    actionBtn.dataset.meridianId = 'blacklist-' + plugin.name;
     actionBtn.style.cssText = 'font-size:13px; font-weight:500; padding:5px 14px; border-radius:5px; cursor:pointer; border:1px solid; transition:all 0.1s; flex-shrink:0; margin-left:12px;';
 
     if (plugin.blacklisted) {
@@ -5128,6 +5148,7 @@ function renderExportOutfits() {
       checkbox.checked = _exportSelected.has(outfit.id);
       checkbox.disabled = disabled;
       checkbox.setAttribute('aria-label', 'Export ' + outfit.name);
+      checkbox.setAttribute('data-meridian-id', 'export-' + outfit.id);
       checkbox.onchange = function() {
         if (this.checked) _exportSelected.add(outfit.id); else _exportSelected.delete(outfit.id);
         row.classList.toggle('selected', this.checked);
@@ -5233,6 +5254,7 @@ function renderImportFiles() {
     var row = document.createElement('button');
     row.className = 't-row transfer-row';
     row.disabled = !!_transferBusy;
+    row.setAttribute('data-meridian-id', 'import-' + file);
     row.setAttribute('aria-label', 'Import ' + file);
     row.innerHTML = '<span class="transfer-row-info"><span class="transfer-row-name">' + escapeHtml(file) + '</span></span><span class="transfer-meta">Import &#8594;</span>';
     row.onclick = function() { importOutfitFile(file); };
@@ -5454,7 +5476,7 @@ function clearSituation(situation) {
 }
 
 function clearAllSituations() {
-  showConfirm('Clear All Situations', 'Remove all situational outfit assignments for this NPC?', function() {
+  showConfirm('Clear All Situations', 'Remove all situational outfit assignments for this character?', function() {
     window.tailorClearAllSituations('');
     toast('All situations cleared', 'danger');
   });
@@ -5877,7 +5899,7 @@ function wigSitClear(situation) {
 }
 
 function wigSitClearAll() {
-  showConfirm('Clear All Wig Situations', 'Remove all situational wig assignments for this NPC?', function() {
+  showConfirm('Clear All Wig Situations', 'Remove all situational wig assignments for this character?', function() {
     window.wiggyClearAllWigSituations('');
     toast('All wig situations cleared', 'danger');
   });
@@ -6024,6 +6046,7 @@ function populatePluginDropdown() {
     if (filter && wigModWigsData[i].name.toLowerCase().indexOf(filter) === -1) continue;
     hasResults = true;
     var item = document.createElement('div');
+    item.dataset.meridianId = 'wig-plugin-' + wigModWigsData[i].name;
     item.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:10px 16px; cursor:pointer; transition:background 0.1s;'
       + (i === addWigSelectedPlugin ? ' color:var(--amber); background:var(--surface-hover);' : ' color:var(--text);');
     item.onmouseover = function() { this.style.background = 'var(--surface-hover)'; };
@@ -6097,6 +6120,7 @@ function renderAddWigTable() {
     var rowCat = addWigRowCategories[i] !== undefined ? addWigRowCategories[i] : addWigDefaultCategory;
 
     var row = document.createElement('div');
+    row.dataset.meridianId = 'add-wig-' + wig.plugin + ':' + wig.formId;
     row.style.cssText = 'display:flex; align-items:center; padding:12px 16px; transition:all 0.1s; border-bottom:1px solid rgba(255,255,255,0.03);'
       + (isSelected ? ' background:rgba(212,160,68,0.08); border-left:2px solid var(--amber);' : ' border-left:2px solid transparent;');
 
@@ -6294,6 +6318,7 @@ function renderWigBlacklistPlugins() {
     leftSide.appendChild(nameSpan); leftSide.appendChild(wigCountSpan);
 
     var actionBtn = document.createElement('button');
+    actionBtn.dataset.meridianId = 'wig-blacklist-' + plugin.name;
     actionBtn.style.cssText = 'font-size:14px; font-weight:500; padding:6px 14px; border-radius:4px; cursor:pointer; flex-shrink:0; margin-left:12px; transition:all 0.1s;';
     if (plugin.blacklisted) {
       actionBtn.style.background = 'rgba(92,184,112,0.1)'; actionBtn.style.color = 'var(--success)'; actionBtn.style.borderColor = 'rgba(92,184,112,0.2)'; actionBtn.style.border = '1px solid rgba(92,184,112,0.2)';
@@ -7186,5 +7211,6 @@ function updateDeleteButtonState() {
   }
 })();
 </script>
+<script src="tailor-controller.js"></script>
 </body>
 </html>

@@ -1,10 +1,22 @@
 # Tailor
 
-Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
+Tailor is an SKSE plugin for managing NPC and player outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.4.3**
+Current source version: **2.5.0**
+
+## Changes in 2.5.0
+
+- Added gamepad navigation, contextual button prompts, cursor mode and preview rotation through Meridian Input.
+- Added a configurable LB + Menu/Start opener that preserves Horde's LB + Y and Romantasy's RB + View/Back shortcuts.
+- Added player outfit and wig support, with player assignments stored in the SKSE co-save.
+- Outfits take priority over assigned wigs when a helmet or hood is worn. Wig screens temporarily hide conflicting headgear and restore it on exit.
+- Added equipment diagnostics for outfit pieces that fail to equip or attach after settling.
+
+The release passed native and browser checks. Skyrim testing of the new controller
+and headwear behavior is still pending. The Bonemold and H2135 armor display reports
+remain open for gameplay verification; this release does not modify those armor assets.
 
 ## Changes from 2.4.1 to 2.4.3
 
@@ -62,6 +74,7 @@ Current source version: **2.4.3**
 - SKSE matching the installed Skyrim runtime
 - Address Library for SKSE Plugins matching the installed Skyrim runtime
 - Meridian UI with the `Meridian.View/1` interface for the in-game browser UI
+- Meridian UI 1.5.0 or another runtime providing `Meridian.Input/1` for controller support
 - `Tailor.esp` enabled when using the Tailor Lesser Power
 
 OBody NG and SmoothCam are optional integrations. Tailor continues without
@@ -70,7 +83,45 @@ them.
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
 The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
 Automated and browser checks do not replace gameplay verification of the new
-2.4.3 workflows on each supported runtime.
+2.5.0 workflows on each supported runtime.
+
+## Controller controls
+
+Hold **LB**, then press **Menu/Start** to open Tailor. In the UI:
+
+| Default Xbox control | Action |
+| --- | --- |
+| D-pad / left stick | Navigate controls |
+| A | Select, activate or edit |
+| B | Leave editing, close a popup, cancel a preview, go back, then close Tailor |
+| LB / RB | Change pages, or cycle outfits/wigs in the dressing screens |
+| X while cycling | Assign the displayed outfit or wig |
+| Y | Enter preview rotation; press again to reset to front |
+| Right stick in rotation mode | Rotate the preview camera |
+| Right stick elsewhere | Scroll the selected list |
+| Right stick click | Toggle cursor mode |
+
+Prompts follow Meridian's bindings and controller label family. Names and search
+text use a physical keyboard. RGB fields use A to start editing, directions to
+adjust, and A or B to finish. Empty mod search fields can be browsed with directions.
+Keyboard/mouse and the Tailor Lesser Power remain available without Meridian Input.
+
+These defaults also apply to existing `Data/SKSE/Plugins/Tailor.ini` files without
+a Controller section. Restart the game after changing them:
+
+```ini
+[Controller]
+Enabled=1
+ShortcutEnabled=1
+Modifier=LeftShoulder
+Button=Start
+```
+
+Set `ShortcutEnabled=0` to disable only the opener or `Enabled=0` to disable
+controller support. Digital names include `Start`, `Back`, `LeftShoulder`,
+`RightShoulder`, `LeftThumb`, `RightThumb`, `South`, `East`, `West`, `North`, and
+`DpadUp/Down/Left/Right`. `Modifier=None` permits a single button. Conflicting or
+reserved chords disable Tailor's opener and are reported in its log.
 
 ## Sharing outfits
 

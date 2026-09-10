@@ -6,5 +6,5 @@
 namespace Plugin
 {
     inline constexpr std::string_view NAME = "Tailor";
-    inline constexpr REL::Version VERSION{ 2, 4, 3, 0 };
+    inline constexpr REL::Version VERSION{ 2, 5, 0, 0 };
 }

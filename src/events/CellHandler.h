@@ -7,6 +7,7 @@ public:
     static CellHandler* GetSingleton();
     static void         Register();
     static void QueueOutfitReEquip(RE::ActorHandle actorHandle, int32_t delayMs = 0);
+    static void QueueWigReEquip(RE::ActorHandle actorHandle);
     static void InvalidatePendingOutfitTasks();
 
 private:

@@ -97,6 +97,7 @@ public:
     void SaveSituations() const;
 
 private:
+    friend class Tailor::Player::State;
     WigAssignments() = default;
 
     std::filesystem::path GetAssignmentsPath() const;

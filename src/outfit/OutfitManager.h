@@ -100,6 +100,7 @@ private:
     void TryEndCreateOutfit(std::uint64_t generation, int attempt);
     void RestoreAssignedOutfit(RE::Actor* actor);
     void QueuePreviewDiagnostics(RE::ActorHandle actor, std::uint64_t generation);
+    void QueueEquipmentAudit(RE::Actor* actor, RE::BGSOutfit* outfit) const;
 
     RE::ActorHandle _currentTarget;
 
@@ -116,6 +117,8 @@ private:
     // in whoever was dressed last.
     std::unordered_map<RE::FormID, OutfitPair> _actorOutfits;
     std::unordered_map<RE::FormID, DefaultOutfitState> _dataLoadedDefaultOutfits;
+    mutable std::unordered_map<RE::FormID, std::uint64_t> _equipmentAudits;
+    mutable std::uint64_t _nextEquipmentAudit = 0;
 
     RE::BGSOutfit*  _flushOutfit = nullptr;
     RE::BGSOutfit*  _preCreateOutfit = nullptr;

@@ -1,0 +1,15 @@
+[data-tailor-controller="true"] [data-meridian-focused] {
+  outline: 3px solid var(--amber-light, #f9c568) !important;
+  outline-offset: -3px;
+  box-shadow: 0 0 14px rgba(239,183,93,.24);
+}
+[data-tailor-controller="true"] .rail-btn[data-meridian-focused] .rail-tip { opacity:1; visibility:visible; }
+#controllerPreview, #controllerPrompts { display:none; }
+[data-tailor-controller="true"] #controllerPreview { display:inline-flex; }
+[data-tailor-controller="true"] .keyboard-hint { display:none; }
+[data-tailor-controller="true"] .stage-rotation-hint { visibility:hidden; }
+[data-tailor-controller="true"] .stage-rotation { width:max-content; max-width:calc(100% - 24px); }
+[data-tailor-controller="true"] .stage-rotation-buttons { flex-wrap:wrap; }
+[data-tailor-controller="true"] #controllerPrompts { display:block; }
+#controllerPrompts { flex:1; min-width:0; font-size:12px; color:var(--fg-2); line-height:1.6; }
+#controllerPreview[aria-pressed="true"] { background:var(--amber); color:var(--bg); }

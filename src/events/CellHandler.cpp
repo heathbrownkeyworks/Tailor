@@ -4,7 +4,6 @@
 #include "outfit/OutfitManager.h"
 #include "outfit/OutfitStore.h"
 #include "wig/WigAssignments.h"
-#include "wig/WigEquipment.h"
 #include "wig/WigManager.h"
 
 #include <atomic>
@@ -166,23 +165,16 @@ namespace
         auto state = WigAssignments::GetSingleton().GetState(actorId);
         if (!state) return;
 
+        if (actor->IsPlayerRef()) {
+            if (state->currentWig.formId != 0) WigManager::GetSingleton().EquipWig(actor, state->currentWig);
+            WigManager::GetSingleton().ScheduleActorHairRetint(actor->GetHandle(), {1, 5, 12});
+            return;
+        }
+
         if (state->currentWig.formId != 0 && !state->currentWig.plugin.empty()) {
-            auto* armor = state->currentWig.Resolve();
-            if (armor) {
-                auto* npc = actor->GetActorBase();
-                if (WigManager::GetActorItemCount(actor, armor) <= 0) {
-                    actor->AddObjectToContainer(armor, nullptr, 1, nullptr);
-                    WigAssignments::GetSingleton().MarkItemAdded(actorId);
-                }
-
-                if (npc) {
-                    WigManager::EnsureArmorAddonRace(armor, npc->GetRace(), npc->GetSex());
-                }
-
-                if (Tailor::Wigs::EquipProtectedWig(actor, armor)) {
-                    logger::info("CellHandler: re-equipped wig '{}' on {} (frame {})",
-                        state->currentWig.name, actor->GetDisplayFullName(), attempt);
-                }
+            if (WigManager::GetSingleton().EquipWig(actor, state->currentWig)) {
+                logger::info("CellHandler: reconciled wig '{}' with outfit on {} (frame {})",
+                    state->currentWig.name, actor->GetDisplayFullName(), attempt);
             }
         }
 
@@ -302,6 +294,11 @@ void CellHandler::InvalidatePendingOutfitTasks()
     sStaggerIndex.store(0);
     sLastStaggerTimeMs.store(0);
     logger::info("CellHandler: invalidated pending outfit tasks for game load");
+}
+
+void CellHandler::QueueWigReEquip(RE::ActorHandle actorHandle)
+{
+    DeferWigReEquip(actorHandle, 0, false, sOutfitTaskGeneration.load(), kWigInitialDelayMs);
 }
 
 RE::BSEventNotifyControl CellHandler::ProcessEvent(

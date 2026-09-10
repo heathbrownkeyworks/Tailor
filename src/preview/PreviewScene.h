@@ -31,10 +31,12 @@ namespace Tailor::Preview
         RE::NiPointer<RE::NiAVObject> _actorRoot;
         std::array<RE::NiPointer<RE::NiPointLight>, 2> _lights;
         VisibilityLedger<RE::NiPointer<RE::NiAVObject>> _hidden;
+        RootVisibilityOverride<RE::NiPointer<RE::NiAVObject>> _playerRootVisibility;
         std::unordered_map<RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> _alwaysDraw;
         std::int64_t _nextSweep{0};
         RE::NiPoint3 _lastCamera{}, _lastApproach{};
         std::uint64_t _worldFeederReculls{0};
+        std::uint64_t _playerRootReveals{0};
         RE::TESObjectCELL* _cell{nullptr}; // identity only, session ends on cell change
         bool _logged{false};
     };

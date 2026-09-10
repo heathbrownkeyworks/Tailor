@@ -11,7 +11,6 @@
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
 #include "preview/TailorPreviewSession.h"
-#include "player/PlayerState.h"
 #include "wig/CustomColorLibrary.h"
 #include "wig/WigManager.h"
 #include "wig/WigAssignments.h"
@@ -140,7 +139,6 @@ static void OnPreLoadGame()
     CellHandler::InvalidatePendingOutfitTasks();
     SituationHandler::GetSingleton()->ResetForGameLoad();
     OutfitManager::GetSingleton().PrepareForGameLoad();
-    Tailor::Player::State::Clear();
 }
 
 static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
@@ -173,7 +171,6 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         CellHandler::InvalidatePendingOutfitTasks();
         SituationHandler::GetSingleton()->ResetForGameLoad();
         OutfitManager::GetSingleton().PrepareForGameLoad();
-        Tailor::Player::State::Clear();
         // Run after this message dispatch so OBody can finish its own new-game
         // transition first. OBody may remain ready and emit no new callback.
         SKSE::GetTaskInterface()->AddTask([generation]() {
@@ -204,10 +201,8 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
     }
 
     logger::info("{} v{}"sv, Plugin::NAME, Plugin::VERSION.string());
-    logger::info("Player support test candidate: playertest.4");
 
     SKSE::Init(a_skse);
-    Tailor::Player::State::Register();
     Tailor::Preview::TailorPreviewSession::InstallHooks();
     OBodyCompat::GetSingleton().DetectInstalled(a_skse);
     SmoothCamCompat::GetSingleton().DetectInstalled(a_skse);

@@ -1,16 +1,23 @@
 # Tailor
 
-Tailor is an SKSE plugin for managing NPC and player outfits, wigs, hair colors, and
+Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.5.0**
+Current source version: **2.5.1**
+
+## Changes in 2.5.1
+
+- Removed experimental player features that were mistakenly included in 2.5.0. Tailor targets NPCs only; opening without an NPC no longer selects the player.
+- Retained controller support and the helmet/hood priority changes.
+- Added checks to prevent player code from entering NPC releases and to ignore player entries during saved outfit/wig restoration.
+
+Experimental player support remains on a separate development branch. This build does not modify or migrate player equipment or player save data.
 
 ## Changes in 2.5.0
 
 - Added gamepad navigation, contextual button prompts, cursor mode and preview rotation through Meridian Input.
 - Added a configurable LB + Menu/Start opener that preserves Horde's LB + Y and Romantasy's RB + View/Back shortcuts.
-- Added player outfit and wig support, with player assignments stored in the SKSE co-save.
 - Outfits take priority over assigned wigs when a helmet or hood is worn. Wig screens temporarily hide conflicting headgear and restore it on exit.
 - Added equipment diagnostics for outfit pieces that fail to equip or attach after settling.
 
@@ -83,7 +90,7 @@ them.
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
 The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
 Automated and browser checks do not replace gameplay verification of the new
-2.5.0 workflows on each supported runtime.
+2.5.1 workflows on each supported runtime.
 
 ## Controller controls
 

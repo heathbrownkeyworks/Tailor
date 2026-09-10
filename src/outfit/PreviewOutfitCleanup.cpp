@@ -45,8 +45,7 @@ namespace Tailor::Outfits
             RE::BSTSmartPointer<RE::BipedAnim> biped;
             std::vector<Part> parts;
 
-            PreviewParts(RE::Actor* actor, RE::FormID primary, RE::FormID alternate,
-                RE::TESBoundObject* selected = nullptr)
+            PreviewParts(RE::Actor* actor, RE::FormID primary, RE::FormID alternate)
             {
                 if (!actor) return;
                 root.reset(actor->Get3D(false));
@@ -55,7 +54,7 @@ namespace Tailor::Outfits
                 if (!root || !biped || !inventory || !inventory->entryList) return;
                 for (auto* entry : *inventory->entryList) {
                     if (!entry || !entry->object || !entry->object->IsArmor() || !entry->extraLists) continue;
-                    const bool owned = selected ? entry->object == selected : std::any_of(entry->extraLists->begin(), entry->extraLists->end(),
+                    const bool owned = std::any_of(entry->extraLists->begin(), entry->extraLists->end(),
                         [&](RE::ExtraDataList* extra) {
                             auto* marker = extra ? extra->GetByType<RE::ExtraOutfitItem>() : nullptr;
                             return marker && marker->id && (marker->id == primary || marker->id == alternate);
@@ -127,28 +126,6 @@ namespace Tailor::Outfits
             }
             return {};
         }
-    }
-
-    bool UnequipArmorInstance(RE::Actor* actor, RE::TESBoundObject* object, RE::ExtraDataList* extra)
-    {
-        if (!actor || !object || !extra) return false;
-        const auto present = [&]() {
-            auto* inventory = actor->GetInventoryChanges();
-            if (!inventory || !inventory->entryList) return false;
-            for (auto* entry : *inventory->entryList) {
-                if (!entry || entry->object != object || !entry->extraLists) continue;
-                for (auto* current : *entry->extraLists) if (current == extra) return true;
-            }
-            return false;
-        };
-        if (!present()) return false;
-        PreviewParts parts(actor, 0, 0, object);
-        auto* manager = RE::ActorEquipManager::GetSingleton();
-        if (!manager) return false;
-        manager->UnequipObject(actor, object, extra, 1, nullptr, false, false, false, true);
-        const bool unequipped = !present() || !extra->GetWorn();
-        parts.Retire(actor);
-        return unequipped;
     }
 
     bool IsOutfitInstance(RE::Actor* actor, RE::TESBoundObject* object,

@@ -3,7 +3,6 @@
 #include "events/SleepStatePolicy.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitManager.h"
-#include "player/PlayerEquipment.h"
 #include "outfit/OutfitStore.h"
 #include "wig/WigAssignments.h"
 #include "wig/WigManager.h"
@@ -18,13 +17,6 @@ namespace
 
     bool IsSleepSituation(RE::Actor* actor)
     {
-        if (actor && actor->IsPlayerRef()) {
-            if (RE::PlayerCharacter::GetSingleton()->GetPlayerFlags().sleeping) return true;
-            if (auto* ui = RE::UI::GetSingleton()) {
-                if (auto menu = ui->GetMenu<RE::SleepWaitMenu>(); menu && menu->GetRuntimeData().isSleeping) return true;
-            }
-            return Tailor::Situations::IsSleepState(Tailor::Situations::ReadSleepState(actor));
-        }
         if (Tailor::Situations::IsSleepState(Tailor::Situations::ReadSleepState(actor))) return true;
 
         // Preserve furniture-based support for beds with unusual state/idle
@@ -187,7 +179,6 @@ int SituationHandler::ResolveOutfitForSituation(RE::FormID actorId, OutfitSituat
 void SituationHandler::ApplyForSituation(RE::Actor* actor)
 {
     if (!actor) return;
-    if (actor->IsPlayerRef() && Tailor::Player::Equipment::GetSingleton().IsPreviewing()) return;
 
     auto& assignments = OutfitAssignments::GetSingleton();
     auto& wigAssignments = WigAssignments::GetSingleton();
@@ -361,7 +352,7 @@ void SituationHandler::PollSleepStates()
     });
     for (auto id : actorIds) {
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
-        if (!actor || !actor->Is3DLoaded() || actor->IsDead()) {
+        if (!actor || !actor->Is3DLoaded() || actor->IsPlayerRef() || actor->IsDead()) {
             _observedSleepStates.erase(id);
             continue;
         }
@@ -393,7 +384,7 @@ void SituationHandler::EvaluateAllAssignedActors()
         total++;
 
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
-        if (!actor || !actor->Is3DLoaded()) continue;
+        if (!actor || !actor->Is3DLoaded() || actor->IsPlayerRef()) continue;
 
         batch.push_back(actor->GetHandle());
     }
@@ -406,7 +397,7 @@ void SituationHandler::EvaluateAllAssignedActors()
         total++;
 
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorId);
-        if (!actor || !actor->Is3DLoaded()) continue;
+        if (!actor || !actor->Is3DLoaded() || actor->IsPlayerRef()) continue;
 
         batch.push_back(actor->GetHandle());
     }
@@ -551,7 +542,7 @@ RE::BSEventNotifyControl SituationHandler::ProcessEvent(
     if (!ref) return RE::BSEventNotifyControl::kContinue;
 
     auto* actor = ref->As<RE::Actor>();
-    if (!actor) return RE::BSEventNotifyControl::kContinue;
+    if (!actor || actor->IsPlayerRef()) return RE::BSEventNotifyControl::kContinue;
 
     auto formId = actor->GetFormID();
     if (!OutfitAssignments::GetSingleton().HasAnySituation(formId) &&
@@ -598,13 +589,14 @@ RE::BSEventNotifyControl SituationHandler::ProcessEvent(
     RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
     if (!event) return RE::BSEventNotifyControl::kContinue;
+    if (event->opening) return RE::BSEventNotifyControl::kContinue;
 
     // "Sleep/Wait Menu" matches RE::SleepWaitMenu::MENU_NAME
     if (event->menuName != RE::SleepWaitMenu::MENU_NAME) {
         return RE::BSEventNotifyControl::kContinue;
     }
 
-    logger::info("SituationHandler: Sleep/Wait menu changed, re-evaluating assignments");
+    logger::info("SituationHandler: Sleep/Wait menu closed, re-evaluating assignments");
 
     // Defer to the SKSE task thread; the menu close fires on the UI thread
     // and we need game-thread access to actor data.

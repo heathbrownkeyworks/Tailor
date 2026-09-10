@@ -89,7 +89,6 @@ namespace Tailor::Preview
         }
         _nextSweep = 0;
         _worldFeederReculls = 0;
-        _playerRootReveals = 0;
         _logged = false;
         return true;
     }
@@ -185,21 +184,11 @@ namespace Tailor::Preview
         // First- and third-person player roots are distinct; retain the exact
         // nodes in the ledger instead of restoring through ambiguous Get3D().
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-            if (actor != player) HideBranch(player->Get3D(false));
+            HideBranch(player->Get3D(false));
             HideBranch(player->Get3D(true));
         }
         KeepActorVisible(_actorRoot.get());
         if (!_logged) {
-            if (actor->IsPlayerRef()) {
-                auto* camera = RE::PlayerCamera::GetSingleton();
-                auto* firstRoot = actor->Get3D(true);
-                auto* fade = _actorRoot->AsFadeNode();
-                logger::info("Tailor player preview visibility: camera={}, root='{}', culled={}, originallyHidden={}, fade={}, firstRootSame={}",
-                    camera && camera->currentState ? static_cast<int>(camera->currentState->id) : -1,
-                    _actorRoot->name.c_str(), _actorRoot->GetAppCulled(),
-                    _playerRootVisibility.WasHidden(), fade ? fade->GetRuntimeData().currentFade : -1.0f,
-                    firstRoot == _actorRoot.get());
-            }
             logger::info("Tailor live scene isolated: target={:08X}, hidden nodes={}, actor/stage draw nodes={}",
                 actor->GetFormID(), _hidden.Size(), _alwaysDraw.size());
             _logged = true;
@@ -316,10 +305,6 @@ namespace Tailor::Preview
         // before every tick; CursorMenu must not compete with those updates.
         HideWorldFeeders();
         _hidden.Reassert([&](const RE::NiAVObject* node) { return Protected(node); });
-        // kAlwaysDraw does not clear Skyrim's first-person app-cull on the body
-        // root. Reassert this one owned flag each frame; children keep their
-        // armor/hair culls and fade settings. NPC targets acquire no override.
-        if (_playerRootVisibility.Show(actor->IsPlayerRef() ? root : nullptr)) ++_playerRootReveals;
         const bool cameraChanged = camera != _lastCamera || approach != _lastApproach;
         if (rebuilt || appearanceChanged || cameraChanged || now >= _nextSweep) {
             Sweep(actor);
@@ -333,9 +318,6 @@ namespace Tailor::Preview
     void PreviewScene::End() noexcept
     {
         if (_logged) logger::info("Tailor preview background: world feeder visibility reasserted {} time(s)", _worldFeederReculls);
-        if (_playerRootReveals) logger::info("Tailor player preview: body root revealed {} time(s)", _playerRootReveals);
-        _playerRootVisibility.Restore();
-        _playerRootReveals = 0;
         _hidden.Restore();
         for (auto& [node, hold] : _alwaysDraw) node->GetFlags().reset(RE::NiAVObject::Flag::kAlwaysDraw);
         _alwaysDraw.clear();

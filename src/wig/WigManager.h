@@ -49,7 +49,6 @@ public:
 
     // Disable and cancel queued recovery before loading; enable only once ready.
     void SetRecoveryEnabled(bool enabled);
-    void PreparePlayerForGameLoad();
 
     // Target — set by TailorUI when opening, delegates to OutfitManager
     bool       SetTarget(RE::Actor* actor);

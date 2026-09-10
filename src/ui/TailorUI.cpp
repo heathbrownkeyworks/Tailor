@@ -1670,7 +1670,6 @@ void TailorUI::SendTargetUpdate()
     // Resolve current outfit name for the target
     std::string currentOutfit;
     auto* target = mgr.GetTarget();
-    data["isPlayer"] = target && target->IsPlayerRef();
     if (target) {
         auto* assignment = OutfitAssignments::GetSingleton().GetAssignment(target->GetFormID());
         if (assignment) {

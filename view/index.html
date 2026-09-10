@@ -1637,8 +1637,8 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
         <line x1="3" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="21" y2="12"/>
       </svg>
       <div style="font-size:17px; font-weight:300; color:var(--text-muted); line-height:1.6;">
-        Character unavailable.<br>
-        Return to normal gameplay, then reopen Tailor.
+        Target an NPC to get started.<br>
+        Look at an NPC, then reopen this menu.
       </div>
     </div>
 
@@ -1806,7 +1806,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     <div style="display:flex; gap:10px;">
       <button class="t-btn t-btn-primary" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleConfirm()">Set Outfit</button>
       <button class="t-btn" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleCancel()">Cancel</button>
-      <button id="cycleResetButton" class="t-btn t-btn-danger" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleReset()">Reset to Default</button>
+      <button class="t-btn t-btn-danger" style="flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; padding:12px 14px;" onclick="doCycleReset()">Reset to Default</button>
     </div>
   </div>
 </div>
@@ -1865,7 +1865,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
     </button>
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2" style="margin-right:8px;"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     <h2 class="t-title-ceremonial" style="font-size:16px;">Manage Outfits</h2>
-    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click a row</strong> to preview the outfit on the selected character, or use the <strong style="color:var(--text)">Edit</strong> button to modify it. Leaving this screen restores the character's outfit. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
+    <span class="help-icon">?<span class="help-tooltip">Browse and manage your saved outfits. <strong style="color:var(--text)">Click a row</strong> to preview the outfit on the target NPC, or use the <strong style="color:var(--text)">Edit</strong> button to modify it. Leaving this screen restores the NPC's outfit. Use <strong style="color:var(--text)">Categories</strong> to organize and <strong style="color:var(--text)">Blacklist</strong> to hide plugins.</span></span>
   </div>
 
   <div style="padding:16px 20px; flex:1; min-height:0; display:flex; flex-direction:column;">
@@ -2112,7 +2112,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
           <option value="light">Light Armor</option>
           <option value="clothing">Clothing</option>
         </select>
-        <span class="help-icon">?<span id="adventuringArmorHelp" class="help-tooltip">Saved for this character. Filters Adventuring Dress and Random using your outfit's <strong style="color:var(--text)">Heavy Armor, Light Armor, or Clothing categories</strong>. An outfit can belong to an armor category and Adventuring together. Any includes all types.</span></span>
+        <span class="help-icon">?<span id="adventuringArmorHelp" class="help-tooltip">Saved for this NPC. Filters Adventuring Dress and Random using your outfit's <strong style="color:var(--text)">Heavy Armor, Light Armor, or Clothing categories</strong>. An outfit can belong to an armor category and Adventuring together. Any includes all types.</span></span>
         <span id="adventuringArmorCount" class="sit-armor-count" aria-live="polite"></span>
       </div>
       <p id="adventuringArmorMessage" class="sit-armor-message" role="status"></p>
@@ -2585,7 +2585,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
           <line x1="12" y1="3" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="21"/>
           <line x1="3" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="21" y2="12"/>
         </svg>
-        <div class="hint-text">Character unavailable.<br>Return to normal gameplay, then reopen Tailor.</div>
+        <div class="hint-text">No one in the court.<br>Look at an NPC, then reopen this menu.</div>
       </div>
       <div id="npcStageStatus" class="stage-preview-status">Preparing NPC preview...</div>
     </div>
@@ -2643,7 +2643,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-      <span class="footer-ver">v2.5.0</span>
+      <span class="footer-ver">v2.5.1</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -2762,7 +2762,6 @@ document.addEventListener('wheel', function (e) {
 //  Shared State
 // ============================================================
 var _targetName = '';
-var _targetIsPlayer = false;
 var _targetSex = '';
 var _activeTab = 'outfits';    // 'outfits' or 'wigs'
 var _confirmCallback = null;
@@ -3358,7 +3357,7 @@ function updateStagePlate() {
   wearingEl.style.display = hasTarget ? 'flex' : 'none';
   if (!hasTarget) return;
   var outfitEl = document.getElementById('barPlateOutfit');
-  outfitEl.textContent = _currentOutfitName || (_targetIsPlayer ? 'Original Gear' : 'Default Outfit');
+  outfitEl.textContent = _currentOutfitName || 'Default Outfit';
   outfitEl.classList.toggle('dim', !_currentOutfitName);
   var wigEl = document.getElementById('barPlateWig');
   wigEl.textContent = wigTargetCurrentWig || 'Default Hair';
@@ -3367,8 +3366,6 @@ function updateStagePlate() {
 
 function tailorSetTarget(data) {
   _targetName = data.name || '';
-  _targetIsPlayer = !!data.isPlayer;
-  document.getElementById('cycleResetButton').textContent = _targetIsPlayer ? 'Restore Original Gear' : 'Reset to Default';
   _targetSex = data.sex || '';
   _currentOutfitName = data.currentOutfit || '';
   updateStagePlate();
@@ -3386,14 +3383,14 @@ function tailorSetTarget(data) {
   var currentOutfit = data.currentOutfit || '';
   if (hasTarget) {
     outfitDisplay.style.display = 'flex';
-    outfitNameEl.textContent = currentOutfit || (_targetIsPlayer ? 'Original Gear' : 'Default Outfit');
+    outfitNameEl.textContent = currentOutfit || 'Default Outfit';
     outfitNameEl.style.color = currentOutfit ? 'var(--fg-1)' : 'var(--fg-3)';
   } else {
     outfitDisplay.style.display = 'none';
   }
 
   // Track recent NPCs (session-only, JS in-memory)
-  if (hasTarget && !_targetIsPlayer) recordRecentNpc(_targetName);
+  if (hasTarget) recordRecentNpc(_targetName);
   renderRecentNpcs();
 
   // Show wig content if wigs tab is active
@@ -4272,7 +4269,7 @@ function startDressing(categoryId, categoryName) {
 //  Main Panel Actions
 // ============================================================
 
-function doResetOutfit() { window.tailorResetOutfit(''); toast(_targetIsPlayer ? 'Original gear restored' : 'Outfit reset to default'); }
+function doResetOutfit() { window.tailorResetOutfit(''); toast('Outfit reset to default'); }
 
 function openLibrary() {
   document.getElementById('outfitSearch').value = '';
@@ -4313,7 +4310,7 @@ function doCycleCancel() {
     showScreen('main');
   }
 }
-function doCycleReset() { window.tailorCancelCycle(''); window.tailorResetOutfit(''); showScreen('main'); toast(_targetIsPlayer ? 'Original gear restored' : 'Outfit reset to default'); }
+function doCycleReset() { window.tailorCancelCycle(''); window.tailorResetOutfit(''); showScreen('main'); toast('Outfit reset to default'); }
 
 // ============================================================
 //  Dressing Room: Searchable Dropdown
@@ -4479,7 +4476,7 @@ function endLibraryOutfitPreview() {
 }
 
 function previewLibraryOutfit(outfitId) {
-  if (!_targetName) { toast('Character unavailable for outfit preview'); return; }
+  if (!_targetName) { toast('Select an NPC to preview outfits'); return; }
   if (_libPreviewOutfitId === outfitId) return;
   if (!_libPreviewOutfitId) window.tailorBeginCreateOutfit('');
   _libPreviewOutfitId = outfitId;
@@ -5476,7 +5473,7 @@ function clearSituation(situation) {
 }
 
 function clearAllSituations() {
-  showConfirm('Clear All Situations', 'Remove all situational outfit assignments for this character?', function() {
+  showConfirm('Clear All Situations', 'Remove all situational outfit assignments for this NPC?', function() {
     window.tailorClearAllSituations('');
     toast('All situations cleared', 'danger');
   });
@@ -5899,7 +5896,7 @@ function wigSitClear(situation) {
 }
 
 function wigSitClearAll() {
-  showConfirm('Clear All Wig Situations', 'Remove all situational wig assignments for this character?', function() {
+  showConfirm('Clear All Wig Situations', 'Remove all situational wig assignments for this NPC?', function() {
     window.wiggyClearAllWigSituations('');
     toast('All wig situations cleared', 'danger');
   });

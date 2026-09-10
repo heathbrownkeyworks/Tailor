@@ -165,12 +165,6 @@ namespace
         auto state = WigAssignments::GetSingleton().GetState(actorId);
         if (!state) return;
 
-        if (actor->IsPlayerRef()) {
-            if (state->currentWig.formId != 0) WigManager::GetSingleton().EquipWig(actor, state->currentWig);
-            WigManager::GetSingleton().ScheduleActorHairRetint(actor->GetHandle(), {1, 5, 12});
-            return;
-        }
-
         if (state->currentWig.formId != 0 && !state->currentWig.plugin.empty()) {
             if (WigManager::GetSingleton().EquipWig(actor, state->currentWig)) {
                 logger::info("CellHandler: reconciled wig '{}' with outfit on {} (frame {})",
@@ -249,6 +243,13 @@ namespace
     }
 }
 
+void CellHandler::QueueWigReEquip(RE::ActorHandle actorHandle)
+{
+    const auto actor = actorHandle.get();
+    if (!actor || actor->IsPlayerRef()) return;
+    DeferWigReEquip(actorHandle, 0, false, sOutfitTaskGeneration.load(), kWigInitialDelayMs);
+}
+
 CellHandler* CellHandler::GetSingleton()
 {
     static CellHandler singleton;
@@ -294,11 +295,6 @@ void CellHandler::InvalidatePendingOutfitTasks()
     sStaggerIndex.store(0);
     sLastStaggerTimeMs.store(0);
     logger::info("CellHandler: invalidated pending outfit tasks for game load");
-}
-
-void CellHandler::QueueWigReEquip(RE::ActorHandle actorHandle)
-{
-    DeferWigReEquip(actorHandle, 0, false, sOutfitTaskGeneration.load(), kWigInitialDelayMs);
 }
 
 RE::BSEventNotifyControl CellHandler::ProcessEvent(

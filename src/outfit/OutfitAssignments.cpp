@@ -127,7 +127,6 @@ void OutfitAssignments::Load()
                 }
 
                 SituationalAssignment sa;
-                if (form->GetFormID() == 0x14) continue; // player settings are save-local
                 sa.outfitId = outfitId;
                 sa.adventuringId = adventuringId;
                 sa.townId = townId;
@@ -200,7 +199,6 @@ void OutfitAssignments::Save() const
     json["assignments"] = nlohmann::json::array();
 
     for (auto& [runtimeId, sa] : _assignments) {
-        if (runtimeId == 0x14) continue; // never share a player's settings across characters
         if (!sa.HasSettings()) continue;
 
         auto* form = RE::TESForm::LookupByID(runtimeId);

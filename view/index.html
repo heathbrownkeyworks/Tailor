@@ -2640,7 +2640,7 @@ select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
      </div>
    </div>
    <div class="bar-cluster right">
-      <span class="footer-ver">v2.4.2</span>
+      <span class="footer-ver">v2.4.3</span>
      <button class="bar-close" onclick="railClose()">
        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        Close
@@ -5262,6 +5262,7 @@ function tailorTransferResult(data) {
       var status = document.getElementById('exportStatus');
       status.classList.remove('error');
       status.textContent = 'Saved ' + data.exported + ' outfit' + (data.exported === 1 ? '' : 's') + ' to ' + data.file;
+      toast(status.textContent);
       document.getElementById('exportOutfitsButton').focus();
     } else {
       document.getElementById('exportNameError').textContent = data.error || 'Export failed. Please try again.';
@@ -5277,6 +5278,7 @@ function tailorTransferResult(data) {
       var skipped = data.skipped || [];
       result.innerHTML = '<div>' + escapeHtml(data.file) + '</div><div>Added ' + data.added + ' · Duplicates ' + data.duplicates + ' · Skipped ' + skipped.length + '</div>';
       if (skipped.length) result.innerHTML += '<ul>' + skipped.map(function(entry) { return '<li>' + escapeHtml(entry.name) + ': ' + escapeHtml(entry.reason) + '</li>'; }).join('') + '</ul>';
+      toast('Import complete: ' + data.added + ' outfit' + (data.added === 1 ? '' : 's') + ' added');
     }
   }
   renderExportOutfits();

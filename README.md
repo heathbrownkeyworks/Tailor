@@ -4,9 +4,9 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.4.2**
+Current source version: **2.4.3**
 
-## Changes from 2.4.1 to 2.4.2
+## Changes from 2.4.1 to 2.4.3
 
 - Added outfit import and export with name, armor type and category filters.
 - Imports preserve existing libraries and assignments and skip matching duplicates.
@@ -16,6 +16,7 @@ Current source version: **2.4.2**
 - Improved preview cleanup and outfit restoration, including support for armors with mismatched mesh slots such as Obi Bodysuit.
 - Improved outfit fallback when no suitable Adventuring outfit is available.
 - Fixed sidebar tooltips appearing behind page content.
+- Added centered completion notifications for outfit exports and imports.
 
 ## Changes in 2.4.1
 
@@ -69,7 +70,7 @@ them.
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
 The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
 Automated and browser checks do not replace gameplay verification of the new
-2.4.2 workflows on each supported runtime.
+2.4.3 workflows on each supported runtime.
 
 ## Sharing outfits
 
@@ -83,6 +84,8 @@ make the file available through a mod's `SKSE/Plugins/Tailor` folder. Import
 adds valid outfits without replacing existing outfits or NPC assignments.
 An outfit is a duplicate only when its exact name and armor item set match.
 Missing armor and unsupported categories are reported and skipped.
+Completed exports and imports show the same centered notification as other saves,
+with detailed results retained on the page.
 
 Exports use stable category keys: `heavy`, `light`, `clothing`, `adventuring`,
 `town`, `home` and `sleep`. Local numeric category IDs are not portable.

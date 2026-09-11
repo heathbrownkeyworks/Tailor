@@ -4,6 +4,7 @@
   let input, stopActions, stopState, observer;
   let opened = false, screen = '', layer = null, disposeScreen, disposeLayer, disposePreview;
   let previewMode = false, numberEditing = null, synchronizing = false;
+  let promptSignature = '';
   const selections = new Map();
   const byId = id => document.getElementById(id);
   const key = () => (_wigCurrentScreen || _currentScreen) + ':' + _activeTab;
@@ -187,18 +188,25 @@
     const controller = opened && state.enabled && state.connected && state.device === 'gamepad';
     const active = String(!!controller);
     if (document.documentElement.dataset.tailorController !== active) document.documentElement.dataset.tailorController = active;
+    if (!controller) return;
     const footer = byId('controllerPrompts');
+    const titles = {main:_activeTab === 'wigs' ? 'Wigs' : 'Outfits', cycle:'Dressing', library:'Manage outfits',
+      create:'Create outfit', edit:'Edit outfit', categories:'Categories', blacklist:'Blacklist', situations:'Situations',
+      export:'Export', import:'Import', wigCycle:'Wig preview', wigLibrary:'Manage wigs', wigAdd:'Add wigs',
+      wigBlacklist:'Wig blacklist', wigHairColor:'Hair color', wigCustomColors:'Custom colors', wigSituations:'Wig situations'};
+    const title = previewMode ? 'Preview rotation' : numberEditing ? 'Edit value' : layer ? 'Selection' :
+      titles[_wigCurrentScreen || _currentScreen] || 'Controls';
     const parts = [];
     const add = (action, label) => {
       const prompt = input.getPrompt(action);
-      if (prompt.label) parts.push(prompt.label + ' ' + label);
+      if (prompt.label) parts.push([prompt.label, label]);
     };
     if (previewMode) {
-      parts.push('Right stick Rotate'); add('tertiary', 'Front'); add('cancel', 'Return');
+      parts.push(['Right stick', 'Rotate']); add('tertiary', 'Front'); add('cancel', 'Return');
     } else {
       add('accept', numberEditing ? 'Done' : 'Select / Edit'); add('cancel', 'Back');
-      if (textField(document.activeElement)) parts.push('Keyboard to type');
-      else if (numberEditing) parts.push('Directions Adjust');
+      if (textField(document.activeElement)) parts.push(['', 'Keyboard to type']);
+      else if (numberEditing) parts.push(['Directions', 'Adjust']);
       else if (!layer) {
         add('previousTab', _currentScreen === 'cycle' || _wigCurrentScreen === 'wigCycle' ? 'Previous' : 'Page');
         add('nextTab', 'Next');
@@ -207,8 +215,22 @@
         add('toggleCursor', state.mode === 'cursor' ? 'Navigation' : 'Cursor');
       }
     }
-    const value = parts.join('   ·   ');
-    if (footer.textContent !== value) footer.textContent = value;
+    // Avoid retriggering the navigation MutationObserver for unchanged hints.
+    const signature = JSON.stringify([title, parts]);
+    if (signature === promptSignature) return;
+    promptSignature = signature;
+    const heading = document.createElement('strong');
+    heading.textContent = title;
+    const items = parts.map(([binding, label]) => {
+      const item = document.createElement('span');
+      if (binding) {
+        const badge = document.createElement('kbd');
+        badge.textContent = binding;
+        item.append(badge, ' ' + label);
+      } else item.textContent = label;
+      return item;
+    });
+    footer.replaceChildren(heading, ...items);
   }
 
   function clearScopes() {

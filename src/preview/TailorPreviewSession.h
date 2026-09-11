@@ -66,6 +66,7 @@ namespace Tailor::Preview
         std::atomic<std::uint64_t> _appearanceRevision{0};
         std::uint64_t _observedRevision{0};
         std::int64_t _missing3DSince{0};
+        std::int64_t _cameraWaitStarted{0};
         bool _ready{false}, _statusDirty{false};
         std::string _statusMessage;
         PreviewScene _scene;

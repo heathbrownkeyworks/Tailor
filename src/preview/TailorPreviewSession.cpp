@@ -113,6 +113,7 @@ namespace Tailor::Preview
         _viewport = {};
         _lastRoot = actor->Get3D(false);
         _missing3DSince = 0;
+        _cameraWaitStarted = 0;
         _observedRevision = _appearanceRevision.load();
         _targetFormID.store(actor->GetFormID());
         _refresh = {};
@@ -236,6 +237,22 @@ namespace Tailor::Preview
         // invalidates camera framing; it never changes actor processing.
         if (!_viewport.IsValid()) return;
         if (!_policy.Owns(Ownership::Camera)) {
+            auto& smoothCam = SmoothCamCompat::GetSingleton();
+            const auto control = smoothCam.AcquireCameraControl();
+            if (control == SmoothCamCompat::CameraControlResult::Pending) {
+                if (!_cameraWaitStarted) _cameraWaitStarted = now;
+                if (now - _cameraWaitStarted > 2000) {
+                    logger::warn("Tailor preview camera declined: SmoothCam camera dispatcher timed out");
+                    close(EndReason::SetupFailed);
+                }
+                return;
+            }
+            if (control == SmoothCamCompat::CameraControlResult::Denied) {
+                logger::warn("Tailor preview camera declined: SmoothCam did not grant control");
+                close(EndReason::SetupFailed);
+                return;
+            }
+            if (smoothCam.OwnsCameraControl()) _policy.Acquire(Ownership::ExternalCamera);
             if (!AcquireCamera(actor) || !_scene.Begin(actor)) {
                 close(EndReason::SetupFailed);
                 return;
@@ -319,15 +336,6 @@ namespace Tailor::Preview
         _savedFreeInputEnabled = freeState->IsInputEventHandlingEnabled();
         _savedFOV = camera->GetRuntimeData2().worldFOV;
         _initialCameraPosition = worldCamera->world.translate;
-
-        auto& smoothCam = SmoothCamCompat::GetSingleton();
-        if (!smoothCam.AcquireCameraControl()) {
-            logger::warn("Tailor preview camera declined: SmoothCam did not grant control");
-            return false;
-        }
-        if (smoothCam.OwnsCameraControl()) {
-            _policy.Acquire(Ownership::ExternalCamera);
-        }
 
         camera->ToggleFreeCameraMode(false);
         if (camera->currentState.get() != freeState) {
@@ -434,9 +442,8 @@ namespace Tailor::Preview
             }
         }
 
-        if (_policy.Owns(Ownership::ExternalCamera)) {
-            SmoothCamCompat::GetSingleton().ReleaseCameraControl();
-        }
+        // Also cancel a request that has not yet acquired a lease or a free camera.
+        SmoothCamCompat::GetSingleton().ReleaseCameraControl();
 
         _savedCameraState.reset();
         _freeCameraState = nullptr;

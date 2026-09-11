@@ -4,7 +4,21 @@ Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
 situation-based appearances in Skyrim Special Edition, Anniversary Edition,
 and VR.
 
-Current source version: **2.5.1**
+Current source version: **2.5.2**
+
+## Changes in 2.5.2
+
+- Fixed NPC previews closing immediately with affected SmoothCam versions.
+- Improved camera control cleanup when closing or reopening Tailor.
+- Restyled gamepad legends to match Horde, with clear button badges and a dedicated bottom bar.
+- Retained controller support, helmet and hood priority, and NPC-only targeting.
+
+The reported SmoothCam failure was confirmed fixed by the affected tester.
+The updated legends passed browser checks at 1080p and 720p. Additional Skyrim
+runtime and controller combinations remain separate gameplay checks.
+
+See [SmoothCam compatibility](SMOOTHCAM_COMPATIBILITY.md) for the technical change
+and validation scope.
 
 ## Changes in 2.5.1
 
@@ -90,7 +104,7 @@ them.
 The isolated live NPC preview is available on SE/AE; it is disabled on VR.
 The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
 Automated and browser checks do not replace gameplay verification of the new
-2.5.1 workflows on each supported runtime.
+2.5.2 workflows on each supported runtime.
 
 ## Controller controls
 

@@ -1,4 +1,5 @@
 #include "compat/SmoothCamCompat.h"
+#include "compat/SmoothCamCameraHook.h"
 
 #include <Windows.h>
 
@@ -103,44 +104,101 @@ void SmoothCamCompat::HandleMessage(SKSE::MessagingInterface::Message* a_message
     auto* api = container ? static_cast<SmoothCamAPI::IVSmoothCam1*>(container->interfaceInstance) : nullptr;
     _api.store(api);
     if (api) {
-        logger::info("SmoothCamCompat: acquired SmoothCam camera-control API");
+        _dispatcherAvailable.store(InstallSmoothCamCameraHook());
+        logger::info("SmoothCamCompat: acquired SmoothCam camera-control API (required thread={})",
+            api->GetSmoothCamThreadId());
     }
 }
 
-bool SmoothCamCompat::AcquireCameraControl()
+SmoothCamCompat::CameraControlResult SmoothCamCompat::AcquireCameraControl()
 {
     if (!_installed.load()) {
-        return true;
+        return CameraControlResult::Granted;
     }
-    auto* api = _api.load();
-    if (!api) {
+    std::scoped_lock lock(_cameraMutex);
+    if (!_api.load()) {
         logger::warn("SmoothCamCompat: declining preview because SmoothCam is installed without an API");
-        return false;
+        return CameraControlResult::Denied;
     }
-
-    const auto result = api->RequestCameraControl(SKSE::GetPluginHandle());
-    if (result == SmoothCamAPI::APIResult::OK || result == SmoothCamAPI::APIResult::AlreadyGiven) {
-        _ownsCamera.store(true);
-        return true;
+    if (!_dispatcherAvailable.load()) {
+        logger::warn("SmoothCamCompat: declining preview because the camera dispatcher is unavailable");
+        return CameraControlResult::Denied;
     }
-
-    logger::warn("SmoothCamCompat: camera-control request declined ({})", ResultName(result));
-    return false;
+    if (_cameraState == CameraState::Idle) _cameraState = CameraState::Pending;
+    if (_cameraState == CameraState::Granted) return CameraControlResult::Granted;
+    if (_cameraState == CameraState::Denied) return CameraControlResult::Denied;
+    // A previous close must finish releasing its lease before a new open acquires one.
+    return CameraControlResult::Pending;
 }
 
 void SmoothCamCompat::ReleaseCameraControl() noexcept
 {
-    if (!_ownsCamera.exchange(false)) {
-        return;
+    std::scoped_lock lock(_cameraMutex);
+    if (_cameraState == CameraState::Granted) {
+        _cameraState = CameraState::Releasing;
+        _releaseWarningLogged = false;
+    } else if (_cameraState != CameraState::Releasing) {
+        // Cancel an unprocessed request too: closing/loading cannot acquire later.
+        _cameraState = CameraState::Idle;
     }
+    // Lifecycle messages already on the required thread release immediately.
+    // Worker-thread closes are completed by the main-update dispatcher.
     auto* api = _api.load();
-    if (!api) {
-        logger::warn("SmoothCamCompat: API disappeared while Tailor owned camera control");
+    if (api && GetCurrentThreadId() == api->GetSmoothCamThreadId()) {
+        ProcessCameraRequestsLocked();
+    }
+}
+
+bool SmoothCamCompat::OwnsCameraControl() const noexcept
+{
+    std::scoped_lock lock(_cameraMutex);
+    return _cameraState == CameraState::Granted || _cameraState == CameraState::Releasing;
+}
+
+void SmoothCamCompat::ProcessCameraRequests()
+{
+    std::scoped_lock lock(_cameraMutex);
+    ProcessCameraRequestsLocked();
+}
+
+void SmoothCamCompat::ProcessCameraRequestsLocked()
+{
+    if (_cameraState != CameraState::Pending && _cameraState != CameraState::Releasing) return;
+    auto* api = _api.load();
+    if (!api) return;
+    const auto currentThread = GetCurrentThreadId();
+    const auto requiredThread = api->GetSmoothCamThreadId();
+    if (currentThread != requiredThread) {
+        if (_cameraState == CameraState::Pending || !_releaseWarningLogged) {
+            logger::warn("SmoothCamCompat: camera dispatcher thread mismatch (current={}, required={})",
+                currentThread, requiredThread);
+        }
+        if (_cameraState == CameraState::Pending) _cameraState = CameraState::Denied;
+        else _releaseWarningLogged = true;
         return;
     }
 
+    if (_cameraState == CameraState::Pending) {
+        const auto result = api->RequestCameraControl(SKSE::GetPluginHandle());
+        if (result == SmoothCamAPI::APIResult::OK || result == SmoothCamAPI::APIResult::AlreadyGiven) {
+            _cameraState = CameraState::Granted;
+            logger::info("SmoothCamCompat: camera control acquired (current={}, required={}, result={})",
+                currentThread, requiredThread, ResultName(result));
+        } else {
+            _cameraState = CameraState::Denied;
+            logger::warn("SmoothCamCompat: camera-control request declined ({}, current={}, required={})",
+                ResultName(result), currentThread, requiredThread);
+        }
+        return;
+    }
     const auto result = api->ReleaseCameraControl(SKSE::GetPluginHandle());
-    if (result != SmoothCamAPI::APIResult::OK) {
+    if (result == SmoothCamAPI::APIResult::OK || result == SmoothCamAPI::APIResult::NotOwner) {
+        _cameraState = CameraState::Idle;
+        logger::info("SmoothCamCompat: camera control released (current={}, required={}, result={})",
+            currentThread, requiredThread, ResultName(result));
+    } else if (!_releaseWarningLogged) {
+        // Keep the outstanding lease tracked until release succeeds or ownership is gone.
+        _releaseWarningLogged = true;
         logger::warn("SmoothCamCompat: camera-control release returned {}", ResultName(result));
     }
 }

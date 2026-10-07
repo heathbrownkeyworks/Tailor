@@ -10,8 +10,8 @@ Current source version: **3.0.0**
 - New native interface drawn inside the game with Dear ImGui. Tailor no longer needs a UI framework mod.
 - The player can be dressed too: outfits, wigs, hair color and situation outfits. Tailor targets the NPC under
   the crosshair, or the player when there is none. The switch at the bottom of the screen changes between them.
-- New Swimming and Warm situations. Warm applies outdoors in cloudy, rainy or snowy weather and in snowy regions.
-  It has outfits only, no wigs.
+- New Swimming and Warm outfit situations. Warm applies outdoors in cloudy, rainy or snowy weather and in snowy
+  regions. Neither one changes the wig.
 - Home now applies to NPCs in any house, not only player homes. Without a Home outfit or wig, Home uses Town's.
 - Outfits are tagged Male, Female or Unisex. An NPC is only given outfits that fit them.
 - A Settings page with three switches: Disable Tailor Favorite, Hide Weapons and Hide Helmets.
@@ -32,7 +32,8 @@ Current source version: **3.0.0**
   several categories.
 - Preview outfits and wigs on the actual NPC, live in the game world, before you assign them.
 - Cycle through a category on an NPC and assign the outfit you like.
-- Assign fixed or randomized outfits and wigs for Adventuring, Town, Home, Sleep, Swimming and Warm.
+- Assign fixed or randomized outfits for Adventuring, Town, Home, Sleep, Swimming and Warm, and wigs for
+  Adventuring, Town, Home and Sleep.
 - Choose an armor type (clothing, light or heavy) for each NPC's Adventuring outfits.
 - Keep assigned outfit pieces in Skyrim's hidden outfit inventory instead of the NPC's trade inventory.
 - Reset Outfit gives an NPC back the default outfit from their own plugin.

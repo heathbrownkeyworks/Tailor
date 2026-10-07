@@ -1,5 +1,6 @@
 #include "TailorScreen.h"
 #include "ControllerLegend.h"
+#include "NameOrder.h"
 #include "screens/HairPresets.h"
 #include "screens/SettingsScreen.h"
 #include "outfit/OutfitNamePolicy.h"
@@ -10,6 +11,10 @@
 #include <cstdio>
 #include <cstring>
 #include <numbers>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include <imgui_internal.h>
 
 namespace Tailor::ImGuiUI
@@ -41,17 +46,27 @@ namespace Tailor::ImGuiUI
             const auto& value = Get(data, key);
             return value.is_boolean() && value.get<bool>();
         }
-        bool Matches(std::string text, std::string query)
+        // A search ignores capitals in any alphabet, as names do (FoldedName).
+        bool Matches(const std::string& text, const std::string& query)
         {
-            auto lower = [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); };
-            std::transform(text.begin(), text.end(), text.begin(), lower);
-            std::transform(query.begin(), query.end(), query.begin(), lower);
-            return text.find(query) != std::string::npos;
+            return Tailor::Outfits::FoldedName(text).find(Tailor::Outfits::FoldedName(query)) != std::string::npos;
         }
-        // Lists sort by name ignoring capitals, as the HTML screen's localeCompare did.
-        bool ByName(const Model& a, const Model& b)
+        // Lists sort by name as the HTML screen's localeCompare did (NameSortKey). A name's key is worked out once and
+        // kept, so a long list costs a lookup per row each frame.
+        void SortByName(Model& rows)
         {
-            return Tailor::Outfits::NameBefore(Text(a, "name"), Text(b, "name"));
+            static std::unordered_map<std::string, std::string> keys;
+            std::vector<std::pair<const std::string*, Model>> keyed;
+            keyed.reserve(rows.size());
+            for (auto& row : rows) {
+                const auto name = Text(row, "name");
+                auto it = keys.find(name);
+                if (it == keys.end()) it = keys.emplace(name, NameSortKey(name)).first;
+                keyed.emplace_back(&it->second, std::move(row));
+            }
+            std::sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return *a.first < *b.first; });
+            rows = Model::array();
+            for (auto& entry : keyed) rows.push_back(std::move(entry.second));
         }
         // Puts `value` in a fixed text box, and says whether it had to be cut. A value too long for the box is cut
         // between UTF-8 characters, never inside one: half a character is bytes that aren't valid UTF-8, and sending
@@ -929,7 +944,7 @@ namespace Tailor::ImGuiUI
                 if (!state.wigs) {
                     // Situation pools are assigned from Situations; the dressing list shows wardrobes only.
                     categories.erase(std::remove_if(categories.begin(), categories.end(), [](const auto& category) { return !Text(category, "situationType").empty(); }), categories.end());
-                    std::sort(categories.begin(), categories.end(), ByName);
+                    SortByName(categories);
                     ImGui::SetCursorPos({24 * scale, 176 * scale - Px(11) / 2});
                     Eyebrow("CATEGORIES", std::to_string(categories.size()) + " categories");
                     ImGui::SetCursorPos({ImGui::GetWindowWidth() - 227 * scale, 156 * scale});
@@ -1177,7 +1192,7 @@ namespace Tailor::ImGuiUI
                     ImGui::SetCursorPosX(20 * scale);
                     BeginList("outfitLibrary", {content, std::max(100 * scale, listBottom - ImGui::GetCursorPosY())});
                     auto outfits = Rows(Get(model, "tailorSetOutfits"));
-                    std::sort(outfits.begin(), outfits.end(), ByName);
+                    SortByName(outfits);
                     if (state.libraryRevealOnRefresh && Changed("tailorSetOutfits")) { state.libraryReveal = true; state.libraryRevealOnRefresh = false; }
                     int shown = 0;
                     std::vector<int> shownIds;
@@ -1522,7 +1537,7 @@ namespace Tailor::ImGuiUI
                 }
                 band("CUSTOM CATEGORIES", "");
                 auto customCategories = Rows(Get(data, "categories"));
-                std::sort(customCategories.begin(), customCategories.end(), ByName);
+                SortByName(customCategories);
                 for (const auto& category : customCategories) {
                     const int id = Number(category, "id");
                     ImGui::PushID(id);
@@ -1745,7 +1760,7 @@ namespace Tailor::ImGuiUI
                 if (!error.empty()) { ImGui::SetCursorPosX(20 * scale); Label(error, Palette::DangerText, 13); }
                 ImGui::PopTextWrapPos();
                 auto transferOutfits = Rows(Get(data, "outfits"));
-                std::sort(transferOutfits.begin(), transferOutfits.end(), ByName);
+                SortByName(transferOutfits);
                 const auto visible = [&](const Model& outfit) {
                     const auto& categories = Rows(Get(outfit, "categories"));
                     return Matches(Text(outfit, "name"), state.search.data()) &&
@@ -2395,7 +2410,7 @@ namespace Tailor::ImGuiUI
             }
             ImGui::SetCursorPos(ImVec2(width - 325 * scale, 10 * scale));
             if (Press("Settings", {125 * scale, 38 * scale}, Tone::Amber, state.page != Page::Cycle, Icon::Gear, 13)) Navigate(Page::Settings, false);
-            Tracked(counter, {width - 190 * scale, counterMiddle - Px(10) / 2}, "V3.0.0", fonts.medium, 10, Palette::Ghost, 1.4f);
+            Tracked(counter, {width - 190 * scale, counterMiddle - Px(10) / 2}, "V3.0.1", fonts.medium, 10, Palette::Ghost, 1.4f);
             ImGui::SetCursorPos(ImVec2(width - 22 * scale - 100 * scale, 10 * scale));
             if (Press("CLOSE", {100 * scale, 38 * scale}, Tone::Neutral, true, Icon::Close, 11)) { Leave(); Emit("tailorClose"); }
             ImGui::End(); ImGui::PopStyleVar();

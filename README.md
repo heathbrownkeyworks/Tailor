@@ -3,7 +3,16 @@
 Tailor is an SKSE plugin for managing outfits, wigs, hair colors and situation-based looks in Skyrim Special
 Edition and Anniversary Edition, for NPCs and for the player.
 
-Current source version: **3.0.0**
+Current source version: **3.0.1**
+
+## Changes in 3.0.1
+
+- Names in Russian, Greek, Chinese, Japanese, Korean and other languages show their own letters instead of question
+  marks. Letters Tailor's fonts don't have are drawn with Windows' own fonts.
+- Lists sort alphabetically by your Windows language, ignoring capitals in any alphabet.
+- Search ignores capitals in any alphabet.
+- Outfit and category names are unique ignoring capitals in any alphabet. Two names that differ only in capitals, such
+  as "Мантия" and "мантия", are renamed once when Tailor loads: the second becomes "мантия (2)".
 
 ## Changes in 3.0.0
 

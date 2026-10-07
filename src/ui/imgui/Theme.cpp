@@ -1,21 +1,86 @@
 #include "Theme.h"
+#include <Windows.h>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <vector>
 
 namespace Tailor::ImGuiUI
 {
+    namespace
+    {
+        std::filesystem::path WindowsFonts()
+        {
+            wchar_t windows[MAX_PATH]{};
+            const auto length = GetWindowsDirectoryW(windows, MAX_PATH);
+            if (length == 0 || length >= MAX_PATH) return {};
+            return std::filesystem::path(windows) / L"Fonts";
+        }
+
+        // The first of these system fonts that exists, read once for the whole process: every Tailor font shares it,
+        // and the atlas reads glyphs from it as they are first drawn, so it must outlive every atlas. Empty when none
+        // exists.
+        std::vector<unsigned char>& SystemFont(const std::filesystem::path& folder, const std::vector<const wchar_t*>& files)
+        {
+            static std::map<std::wstring, std::vector<unsigned char>> cache;
+            static std::vector<unsigned char> none;
+            for (const wchar_t* file : files) {
+                const auto path = folder / file;
+                if (const auto it = cache.find(path.native()); it != cache.end()) return it->second;
+                std::ifstream in(path, std::ios::binary);
+                if (!in) continue;
+                std::vector<unsigned char> data{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+                if (data.empty()) continue;
+                return cache.emplace(path.native(), std::move(data)).first->second;
+            }
+            return none;
+        }
+
+        // Chinese, Japanese and Korean share many characters but draw them differently, so the font of Windows' display
+        // language comes first.
+        std::vector<std::vector<const wchar_t*>> EastAsianFonts()
+        {
+            const std::vector<const wchar_t*> chinese{L"msyh.ttc", L"simsun.ttc"};
+            const std::vector<const wchar_t*> japanese{L"YuGothR.ttc", L"meiryo.ttc", L"msgothic.ttc"};
+            const std::vector<const wchar_t*> korean{L"malgun.ttf"};
+            switch (PRIMARYLANGID(GetUserDefaultUILanguage())) {
+            case LANG_JAPANESE: return {japanese, chinese, korean};
+            case LANG_KOREAN: return {korean, chinese, japanese};
+            default: return {chinese, japanese, korean};
+            }
+        }
+    }
+
     bool LoadFonts(ImGuiIO& io, const std::string& directory, Fonts& fonts)
     {
-        auto load = [&](const char* file, float size) -> ImFont* {
+        // Poppins and Montserrat draw everything they have. A letter they lack comes from Windows' own fonts, as the
+        // HTML screen's sans-serif fallback did: Segoe UI at a close weight (Cyrillic, Greek), then Chinese, Japanese and
+        // Korean. A system font that is missing is skipped.
+        const auto system = WindowsFonts();
+        const auto eastAsian = EastAsianFonts();
+        auto merge = [&](float size, std::vector<unsigned char>& data) {
+            if (data.empty()) return;
+            ImFontConfig config;
+            config.MergeMode = true;
+            config.FontDataOwnedByAtlas = false;
+            io.Fonts->AddFontFromMemoryTTF(data.data(), static_cast<int>(data.size()), size, &config);
+        };
+        auto load = [&](const char* file, float size, const wchar_t* fallback) -> ImFont* {
             auto path = std::filesystem::path(directory) / file;
             if (!std::filesystem::is_regular_file(path)) return nullptr;
-            return io.Fonts->AddFontFromFileTTF(path.string().c_str(), size);
+            ImFont* font = io.Fonts->AddFontFromFileTTF(path.string().c_str(), size);
+            if (!font || system.empty()) return font;
+            merge(size, SystemFont(system, {fallback, L"segoeui.ttf"}));
+            for (const auto& files : eastAsian) merge(size, SystemFont(system, files));
+            return font;
         };
-        fonts.body = load("Poppins-Regular.ttf", 14.0f);
-        fonts.medium = load("Poppins-Medium.ttf", 14.0f);
-        fonts.bold = load("Poppins-SemiBold.ttf", 16.0f);
-        fonts.heading = load("Montserrat-Black.ttf", 18.0f);
+        fonts.body = load("Poppins-Regular.ttf", 14.0f, L"segoeui.ttf");
+        fonts.medium = load("Poppins-Medium.ttf", 14.0f, L"seguisb.ttf");
+        fonts.bold = load("Poppins-SemiBold.ttf", 16.0f, L"seguisb.ttf");
+        fonts.heading = load("Montserrat-Black.ttf", 18.0f, L"seguibl.ttf");
         const bool complete = fonts.body && fonts.medium && fonts.bold && fonts.heading;
         if (!fonts.body) fonts.body = io.Fonts->AddFontDefault();
         if (!fonts.medium) fonts.medium = fonts.body;

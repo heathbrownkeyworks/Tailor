@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 #include <type_traits>
 
 namespace Tailor::Preview
@@ -30,6 +31,19 @@ namespace Tailor::Preview
         // Guard it so ordinary gameplay can never accidentally enter fly mode.
         camera->ToggleFreeCameraMode(false);
         return !camera->IsInFreeCameraMode();
+    }
+
+    // Starts or ends the free camera without letting it change the game's control switches. The
+    // free camera saves the switches as it starts, turns every control on, and puts its saved copy
+    // back as it ends. A switch another mod held off for a moment as the preview started would then
+    // stay off after Tailor closes: Better Third Person Selection turns wheel zoom off while Shift,
+    // the first key of Tailor's Shift+Z, is held.
+    template<class Camera, class Controls> void ToggleFreeCameraKeepingControls(Camera& camera, Controls* controls)
+    {
+        std::uint32_t enabled = 0, stored = 0;
+        if (controls) controls->GetControlsState(enabled, stored);
+        camera.ToggleFreeCameraMode(false);
+        if (controls) controls->SetControlsState(enabled, stored);
     }
 
     // Hold locomotion only. Actor processing, life state and animation graphs
@@ -163,6 +177,68 @@ namespace Tailor::Preview
         return {distance, lateral,
             (1.0f - 2.0f * (y + height * 0.5f)) * distance * tanVertical,
             std::atan2(lateral, distance)};
+    }
+
+    // The player is never held. Refit the framing once they have moved this far from
+    // where they were framed; idle sway alone keeps the camera still.
+    inline constexpr float kRecenterDistance = 16.0f;
+
+    template<class Point> [[nodiscard]] constexpr bool NeedsRecenter(const Point& framed, const Point& now) noexcept
+    {
+        const float dx = now.x - framed.x, dy = now.y - framed.y, dz = now.z - framed.z;
+        return dx * dx + dy * dy + dz * dz > kRecenterDistance * kRecenterDistance;
+    }
+
+    // A player preview switches first person to third and puts drawn weapons away. Each comes
+    // back once, when the session really ends: a target switch keeps the pending restore for the
+    // next target without clearing it, and a load or new game sets the camera and the weapons
+    // itself, so there it is forgotten.
+    [[nodiscard]] constexpr bool TakeEndOfSessionRestore(bool& pending, bool targetSwitch, bool worldReverting) noexcept
+    {
+        if (targetSwitch || !pending) return false;
+        pending = false;
+        return !worldReverting;
+    }
+
+    // The player's preview hides their weapons, so weapons that are out, or coming out, are put
+    // away first. Weapons already going away are left alone.
+    template<class WeaponState> [[nodiscard]] constexpr bool WeaponsOut(WeaponState state) noexcept
+    {
+        return state == WeaponState::kWantToDraw || state == WeaponState::kDrawing || state == WeaponState::kDrawn;
+    }
+
+    // What the player's preview hides: weapons drawn or sheathed, the ammunition in the quiver and
+    // a held torch. Never armor, shields included: outfits can include a shield.
+    template<class FormType> [[nodiscard]] constexpr bool HiddenInPlayerPreview(FormType type) noexcept
+    {
+        return type == FormType::Weapon || type == FormType::Ammo || type == FormType::Light;
+    }
+
+    // Sheathing dispels a bound weapon, so a player holding one keeps their weapons out; the
+    // preview still hides them.
+    template<class WeaponState> [[nodiscard]] constexpr bool PutAwayForPreview(WeaponState state, bool boundWeaponHeld) noexcept
+    {
+        return !boundWeaponHeld && WeaponsOut(state);
+    }
+
+    // Nodes the player's preview hides by name, besides biped parts: a drawn weapon's scabbard
+    // (Scb, and ScbLeft from dual-sheath mods) and the weapon, quiver and torch displays of
+    // Immersive Equipment Displays ("OBJECT WEAPON [...]", "OBJECT AMMO [...]", "OBJECT LIGHT
+    // [...]"). IED's shield, armor and misc displays stay. Node names match regardless of case,
+    // as the game's own lookups do.
+    [[nodiscard]] constexpr bool HiddenNodeInPlayerPreview(std::string_view name) noexcept
+    {
+        const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+        const auto startsWith = [&](std::string_view prefix) {
+            if (name.size() < prefix.size()) return false;
+            for (std::size_t i = 0; i < prefix.size(); ++i) {
+                if (lower(name[i]) != prefix[i]) return false;
+            }
+            return true;
+        };
+        const auto is = [&](std::string_view whole) { return name.size() == whole.size() && startsWith(whole); };
+        return is("scb") || is("scbleft") ||
+            startsWith("object weapon [") || startsWith("object ammo [") || startsWith("object light [");
     }
 
     class PreviewSessionPolicy

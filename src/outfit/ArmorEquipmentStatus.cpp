@@ -25,6 +25,10 @@ namespace Tailor::Outfits
         for (auto* addon : armor->armorAddons) {
             if (!addon || !addon->IsValidRace(npc->GetRace())) continue;
             const auto* model = addon->bipedModels[static_cast<std::size_t>(sex)].GetModel();
+            // A female body shows the male model when hers is blank, as vanilla shields rely on (FitsBody agrees).
+            if ((!model || !*model) && sex == RE::SEX::kFemale) {
+                model = addon->bipedModels[static_cast<std::size_t>(RE::SEX::kMale)].GetModel();
+            }
             if (!model || !*model) continue;
             result.compatibleModel = true;
             ++required;
@@ -52,5 +56,29 @@ namespace Tailor::Outfits
         result.attached = required > 0 && attached == required;
         result.graphVisible = required > 0 && visible == required;
         return result;
+    }
+
+    bool FitsBody(RE::TESObjectARMO* armor, RE::TESRace* race, RE::SEX sex)
+    {
+        if (!armor || !race || (sex != RE::SEX::kMale && sex != RE::SEX::kFemale)) return true;
+        const auto shows = [](const auto& biped) {
+            const auto* model = biped.GetModel();
+            return model && *model;
+        };
+        bool anyModel = false;
+        for (auto* addon : armor->armorAddons) {
+            if (!addon) continue;
+            const bool male = shows(addon->bipedModels[static_cast<std::size_t>(RE::SEX::kMale)]);
+            const bool female = shows(addon->bipedModels[static_cast<std::size_t>(RE::SEX::kFemale)]);
+            anyModel |= male || female;
+            if (addon->IsValidRace(race) && (sex == RE::SEX::kMale ? male : female || male)) return true;
+        }
+        return !anyModel;
+    }
+
+    bool FitsActorBody(RE::Actor* actor, RE::TESObjectARMO* armor)
+    {
+        auto* npc = actor ? actor->GetActorBase() : nullptr;
+        return !npc || FitsBody(armor, actor->GetRace(), npc->GetSex());
     }
 }

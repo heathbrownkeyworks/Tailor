@@ -1,166 +1,129 @@
 # Tailor
 
-Tailor is an SKSE plugin for managing NPC outfits, wigs, hair colors, and
-situation-based appearances in Skyrim Special Edition, Anniversary Edition,
-and VR.
+Tailor is an SKSE plugin for managing outfits, wigs, hair colors and situation-based looks in Skyrim Special
+Edition and Anniversary Edition, for NPCs and for the player.
 
-Current source version: **2.5.2**
+Current source version: **3.0.0**
 
-## Changes in 2.5.2
+## Changes in 3.0.0
 
-- Fixed NPC previews closing immediately with affected SmoothCam versions.
-- Improved camera control cleanup when closing or reopening Tailor.
-- Restyled gamepad legends to match Horde, with clear button badges and a dedicated bottom bar.
-- Retained controller support, helmet and hood priority, and NPC-only targeting.
-
-The reported SmoothCam failure was confirmed fixed by the affected tester.
-The updated legends passed browser checks at 1080p and 720p. Additional Skyrim
-runtime and controller combinations remain separate gameplay checks.
-
-See [SmoothCam compatibility](SMOOTHCAM_COMPATIBILITY.md) for the technical change
-and validation scope.
-
-## Changes in 2.5.1
-
-- Removed experimental player features that were mistakenly included in 2.5.0. Tailor targets NPCs only; opening without an NPC no longer selects the player.
-- Retained controller support and the helmet/hood priority changes.
-- Added checks to prevent player code from entering NPC releases and to ignore player entries during saved outfit/wig restoration.
-
-Experimental player support remains on a separate development branch. This build does not modify or migrate player equipment or player save data.
-
-## Changes in 2.5.0
-
-- Added gamepad navigation, contextual button prompts, cursor mode and preview rotation through Meridian Input.
-- Added a configurable LB + Menu/Start opener that preserves Horde's LB + Y and Romantasy's RB + View/Back shortcuts.
-- Outfits take priority over assigned wigs when a helmet or hood is worn. Wig screens temporarily hide conflicting headgear and restore it on exit.
-- Added equipment diagnostics for outfit pieces that fail to equip or attach after settling.
-
-The release passed native and browser checks. Skyrim testing of the new controller
-and headwear behavior is still pending. The Bonemold and H2135 armor display reports
-remain open for gameplay verification; this release does not modify those armor assets.
-
-## Changes from 2.4.1 to 2.4.3
-
-- Added outfit import and export with name, armor type and category filters.
-- Imports preserve existing libraries and assignments and skip matching duplicates.
-- Added per-NPC Adventuring armor preferences for Heavy Armor, Light Armor, Clothing or Any.
-- Added outfit previews by clicking rows in Manage Outfits.
-- Outfits and wigs now appear alphabetically in Dressing previews.
-- Improved preview cleanup and outfit restoration, including support for armors with mismatched mesh slots such as Obi Bodysuit.
-- Improved outfit fallback when no suitable Adventuring outfit is available.
-- Fixed sidebar tooltips appearing behind page content.
-- Added centered completion notifications for outfit exports and imports.
-
-## Changes in 2.4.1
-
-- Fixed incorrect sleep detection that could leave awake NPCs wearing sleep outfits.
-- Preserves early sleep outfit changes and existing libraries and assignments.
-
-## Changes from 2.3.7 to 2.4.0
-
-- Outfits can belong to multiple categories.
-- Outfit categories work with both male and female NPCs.
-- Duplicate legacy default categories are combined while preserving existing outfits and assignments.
-- Improved wig retention when followers are dismissed or equipment is reset.
-- Faster wig recovery after magic effects and stripping events.
-- Fixed hair color tiles sometimes requiring a second click.
-- NPCs return to their regular outfit after situational outfits end.
-- Sleep outfits apply earlier when NPCs enter bed and support alternate sleep animations.
-- Slows in-game time while Tailor is open and restores the original timescale on exit.
-- Improved preview rotation, camera restoration and NPC movement handling.
+- New native interface drawn inside the game with Dear ImGui. Tailor no longer needs a UI framework mod.
+- The player can be dressed too: outfits, wigs, hair color and situation outfits. Tailor targets the NPC under
+  the crosshair, or the player when there is none. The switch at the bottom of the screen changes between them.
+- New Swimming and Warm situations. Warm applies outdoors in cloudy, rainy or snowy weather and in snowy regions.
+  It has outfits only, no wigs.
+- Home now applies to NPCs in any house, not only player homes. Without a Home outfit or wig, Home uses Town's.
+- Outfits are tagged Male, Female or Unisex. An NPC is only given outfits that fit them.
+- A Settings page with three switches: Disable Tailor Favorite, Hide Weapons and Hide Helmets.
+- Weapons, shields, quivers and torches are hidden while someone wears their Sleep or Swimming look.
+- A mod API for other mods, from Papyrus and from C++. See [docs/api/README.md](docs/api/README.md).
+- Outfit names and category names are unique, ignoring capitals.
+- 300 hair colors in 14 families, plus your own custom colors.
+- Deleting an outfit gives every NPC who wore it their own outfit back.
+- Tailor never dresses children and does not open on one.
+- Tailor's files are saved through a temporary file, and a file Tailor can't read in full is never overwritten.
+- Lists sort by name ignoring capitals.
+- No controller button combination opens Tailor anymore. On a controller, use the Tailor power from Favorites.
+- Tailor is now licensed under GPL-3.0-or-later. See [License](#license).
 
 ## Features
 
-- Create shared outfit categories and place outfits in multiple categories.
-- Build outfits from armor records already loaded in the game.
-- Preview outfits and wigs on the selected NPC before saving an assignment.
-- Inspect hair in a closer preview that uses the NPC's existing in-game appearance.
-- Keep assigned outfit items in Skyrim's hidden outfit inventory instead of
-  the NPC's normal trade inventory.
-- Restore the NPC's plugin-defined default outfit with Reset Outfit, including
-  assignments created by older Tailor versions.
-- Assign fixed or randomized outfits and wigs for adventuring, town, home, and
-  sleep situations.
-- Choose an Adventuring armor preference for each NPC's fixed and random outfits.
-- Share selected outfits through portable JSON files with built-in categories.
-- Save persistent outfit, wig, and hair-color assignments.
-- Coordinate outfit changes with OBody NG so the NPC keeps the assigned body.
-- Use SmoothCam camera ownership when SmoothCam is installed.
-- Open the interface with the configurable hotkey or the Tailor Lesser Power.
-- Build one Address Library based DLL for Skyrim SE, AE, and VR.
+- Create outfits from armor records already loaded in the game, and sort them into categories. An outfit can be in
+  several categories.
+- Preview outfits and wigs on the actual NPC, live in the game world, before you assign them.
+- Cycle through a category on an NPC and assign the outfit you like.
+- Assign fixed or randomized outfits and wigs for Adventuring, Town, Home, Sleep, Swimming and Warm.
+- Choose an armor type (clothing, light or heavy) for each NPC's Adventuring outfits.
+- Keep assigned outfit pieces in Skyrim's hidden outfit inventory instead of the NPC's trade inventory.
+- Reset Outfit gives an NPC back the default outfit from their own plugin.
+- Add wigs from installed mods, assign them, and color hair.
+- Share outfits with other players through JSON files.
+- Hide plugins you don't want in the outfit and wig lists.
+- Coordinates outfit changes with OBody NG so NPCs keep their bodies.
+- Borrows the camera through SmoothCam's API when SmoothCam is installed.
+- Open Tailor with a hotkey (Shift+Z by default) or with the Tailor Lesser Power.
 
 ## Runtime requirements
 
-- Skyrim Special Edition, Anniversary Edition, or VR
+- Skyrim Special Edition or Anniversary Edition
 - SKSE matching the installed Skyrim runtime
 - Address Library for SKSE Plugins matching the installed Skyrim runtime
-- Meridian UI with the `Meridian.View/1` interface for the in-game browser UI
-- Meridian UI 1.5.0 or another runtime providing `Meridian.Input/1` for controller support
-- `Tailor.esp` enabled when using the Tailor Lesser Power
+- `Tailor.esp` enabled, for the Tailor Lesser Power
 
-OBody NG and SmoothCam are optional integrations. Tailor continues without
-them.
+OBody NG and SmoothCam are optional. Tailor works without them.
 
-The isolated live NPC preview is available on SE/AE; it is disabled on VR.
-The 2.4.1 sleep-state correction has automated coverage for six runtime layouts.
-Automated and browser checks do not replace gameplay verification of the new
-2.5.2 workflows on each supported runtime.
+The same DLL also builds for VR, where the live preview is turned off.
 
-## Controller controls
+## Opening Tailor
 
-Hold **LB**, then press **Menu/Start** to open Tailor. In the UI:
+Press **Shift+Z**, or cast the **Tailor** Lesser Power. Tailor gives the power to the player on every load and adds
+it to Favorites, unless Disable Tailor Favorite is on in Tailor's Settings. On a controller, the power is the way
+in. The game keeps running while Tailor is open, so the preview NPC stays animated.
+
+The hotkey is set in `Data/SKSE/Plugins/Tailor.ini`, as DirectX scan codes:
+
+```ini
+[Hotkey]
+ModifierKey=42
+ActivateKey=44
+```
+
+`ModifierKey=0` uses the activate key alone. Set `GrantPower=0` under `[Power]` if you only want the hotkey.
+
+## Controller
 
 | Default Xbox control | Action |
 | --- | --- |
-| D-pad / left stick | Navigate controls |
-| A | Select, activate or edit |
-| B | Leave editing, close a popup, cancel a preview, go back, then close Tailor |
-| LB / RB | Change pages, or cycle outfits/wigs in the dressing screens |
-| X while cycling | Assign the displayed outfit or wig |
-| Y | Enter preview rotation; press again to reset to front |
-| Right stick in rotation mode | Rotate the preview camera |
-| Right stick elsewhere | Scroll the selected list |
-| Right stick click | Toggle cursor mode |
+| D-pad / left stick | Move between controls |
+| A | Select or edit |
+| B | Back, then close Tailor |
+| LB / RB | Change pages, or the previous and next outfit or wig while dressing |
+| X while dressing | Assign the outfit or wig shown |
+| Y | Rotate the preview; press again to face the front |
+| Right stick | Rotate the preview while rotating, otherwise scroll the list |
+| R3 | Switch between controller navigation and a cursor |
 
-Prompts follow Meridian's bindings and controller label family. Names and search
-text use a physical keyboard. RGB fields use A to start editing, directions to
-adjust, and A or B to finish. Empty mod search fields can be browsed with directions.
-Keyboard/mouse and the Tailor Lesser Power remain available without Meridian Input.
-
-These defaults also apply to existing `Data/SKSE/Plugins/Tailor.ini` files without
-a Controller section. Restart the game after changing them:
+The bottom of the screen shows the buttons for the current page. Names and searches are typed on a keyboard.
+Controller settings live in `Tailor.ini`:
 
 ```ini
 [Controller]
 Enabled=1
-ShortcutEnabled=1
-Modifier=LeftShoulder
-Button=Start
+;GlyphFamily=Xbox
+Accept=South
+Cancel=East
+Secondary=West
+Tertiary=North
+PreviousTab=LeftShoulder
+NextTab=RightShoulder
+ToggleCursor=RightThumb
 ```
 
-Set `ShortcutEnabled=0` to disable only the opener or `Enabled=0` to disable
-controller support. Digital names include `Start`, `Back`, `LeftShoulder`,
-`RightShoulder`, `LeftThumb`, `RightThumb`, `South`, `East`, `West`, `North`, and
-`DpadUp/Down/Left/Right`. `Modifier=None` permits a single button. Conflicting or
-reserved chords disable Tailor's opener and are reported in its log.
+`GlyphFamily` is `Xbox`, `PlayStation` or `Generic`. The action names take `South`, `East`, `West`, `North`,
+`LeftShoulder`, `RightShoulder`, `LeftThumb`, `RightThumb`, `Start` and `Back`. The D-pad is kept for navigation.
+A bad or repeated binding puts every action back to its default. Restart the game after changing the file.
+
+## Settings
+
+The Settings page holds three switches, all off by default. They apply to every save and are kept in
+`Data/SKSE/Plugins/Tailor/settings.json`.
+
+- Disable Tailor Favorite: keep the Tailor power out of Favorites.
+- Hide Weapons: hide weapons, shields and quivers outside Adventuring and combat. Torches stay.
+- Hide Helmets: take helmets and hoods off outside Adventuring and combat, and put the same ones back on after.
 
 ## Sharing outfits
 
-Use Export in the outfit sidebar to select outfits, filter the list and name a
-JSON file. Tailor adds `.json` and saves in `Data/SKSE/Plugins/Tailor`. Only
-built-in category memberships are shared. Existing files and Tailor's own
-library, assignment and blacklist files cannot be overwritten.
+Open Export, pick outfits, and name the file. Tailor adds `.json` and saves it in `Data/SKSE/Plugins/Tailor`. It
+never overwrites an existing file or one of its own files.
 
-Place a shared file in the same folder and choose it from Import. With MO2,
-make the file available through a mod's `SKSE/Plugins/Tailor` folder. Import
-adds valid outfits without replacing existing outfits or NPC assignments.
-An outfit is a duplicate only when its exact name and armor item set match.
-Missing armor and unsupported categories are reported and skipped.
-Completed exports and imports show the same centered notification as other saves,
-with detailed results retained on the page.
+To import, put the file in the same folder and choose it on the Import page. With MO2, place it in a mod's
+`SKSE/Plugins/Tailor` folder. Import adds new outfits and never replaces outfits or assignments you already have.
+An outfit with the same name and the same pieces as one of yours is a duplicate. One with the same name but
+different pieces is skipped, since names are unique. Missing armor and unknown categories are reported and skipped.
 
-Exports use stable category keys: `heavy`, `light`, `clothing`, `adventuring`,
-`town`, `home` and `sleep`. Local numeric category IDs are not portable.
+Only built-in categories travel with an outfit, by these keys: `heavy`, `light`, `clothing`, `adventuring`,
+`town`, `home`, `sleep`, `swimming` and `warm`. `sex` is -1 for Unisex, 0 for Male and 1 for Female.
 
 ```json
 {
@@ -169,6 +132,7 @@ Exports use stable category keys: `heavy`, `light`, `clothing`, `adventuring`,
   "outfits": [
     {
       "name": "Example Outfit",
+      "sex": -1,
       "categories": ["light", "adventuring"],
       "items": [
         {"formId": 2048, "name": "Example Armor", "plugin": "ExampleArmor.esp"}
@@ -178,54 +142,64 @@ Exports use stable category keys: `heavy`, `light`, `clothing`, `adventuring`,
 }
 ```
 
-Replace the example item with an installed armor record's plugin-local FormID
-and plugin filename. Item order and item display names do not affect duplicate
-matching; different outfit names remain separate outfits.
+`formId` is the armor record's plugin-local FormID, and `plugin` its plugin file. Item order and item names don't
+matter when matching duplicates.
+
+## Mod API
+
+Other mods can read the player's outfits and categories, build outfits, ask which situation someone is in, dress
+anyone in a Tailor outfit, and hear when outfits or situations change. Papyrus scripts call the `Tailor` script
+(`papyrus/Source/Scripts/Tailor.psc`). SKSE plugins include [`docs/api/TailorAPI.h`](docs/api/TailorAPI.h). The
+reference is [docs/api/README.md](docs/api/README.md), and `tools/api-test/` has a test quest script that calls
+every function.
 
 ## Building
 
-Requirements:
+You need:
 
 - Windows 10 or later
 - Visual Studio 2022 or the Visual Studio 2022 Build Tools with MSVC
 - [xmake](https://xmake.io/) 3.0.1 or later
 - Git
 
-Clone the repository and its CommonLibSSE-NG submodule:
+Clone the repository with its CommonLibSSE-NG submodule:
 
 ```powershell
 git clone --recurse-submodules https://github.com/heathbrownkeyworks/Tailor.git
 Set-Location Tailor
 ```
 
-Configure and build the unified release DLL:
+Configure and build the release DLL:
 
 ```powershell
 xmake f -p windows -a x64 -m release --skyrim_se=y --skyrim_ae=y --skyrim_vr=y -c
 xmake build
 ```
 
-The DLL is written to:
+Always pass `-p windows`; without it xmake picks MinGW. The DLL is written to
+`build/windows/x64/release/Tailor.dll`.
 
-```text
-build/windows/x64/release/Tailor.dll
-```
+This repository holds source, not a ready-to-install mod. A packaged mod also needs:
 
-The repository contains source files rather than a ready-to-install mod
-archive. The packaged mod also needs the generated `Tailor.esp`, the Meridian
-UI files from `view/`, and the preview assets from `assets/`.
+- `Tailor.esp`, built from `plugin/spriggit/` with Spriggit
+- `Scripts/Tailor.pex`, compiled from `papyrus/Source/Scripts/Tailor.psc`, with the source in
+  `Source/Scripts/` and `Scripts/Source/`
+- the fonts from `assets/fonts/` in `SKSE/Plugins/Tailor/fonts/`
+- the preview mesh and textures from `assets/meshes/` and `assets/textures/`
 
 ## Source layout
 
-- `src/` contains the native SKSE plugin.
-- `view/` contains the Meridian UI web view.
-- `plugin/spriggit/` contains the Spriggit source for `Tailor.esp`.
-- `assets/` contains the live-preview mesh and textures.
+- `src/` is the SKSE plugin.
+- `papyrus/` is the `Tailor` script for the mod API.
+- `plugin/spriggit/` is the Spriggit source for `Tailor.esp`.
+- `assets/` holds the fonts and the preview mesh and textures.
+- `docs/api/` is the mod API reference and its C++ header.
+- `tools/api-test/` is a test quest for the mod API.
 - `lib/commonlibsse-ng/` is the CommonLibSSE-NG submodule.
 
 ## License
 
-Tailor's original work is available under the [MIT License](LICENSE).
-Third-party material retains its applicable upstream license. See
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for attribution and license
-details.
+Tailor is licensed under GPL-3.0-or-later, with the additional permissions in [EXCEPTIONS.md](EXCEPTIONS.md). See
+[LICENSING.md](LICENSING.md) and [LICENSE](LICENSE). The API header `docs/api/TailorAPI.h` is also available
+under the MIT License ([licenses/TailorAPI-MIT.txt](licenses/TailorAPI-MIT.txt)). Third-party material keeps its
+own license; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

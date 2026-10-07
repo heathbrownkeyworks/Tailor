@@ -1,12 +1,18 @@
 #include "ui/TailorUI.h"
-#include "ui/ControllerShortcut.h"
+#include "ui/imgui/ImGuiHost.h"
 #include "Settings.h"
 
+#include "events/PowerHandler.h"
 #include "events/SituationHandler.h"
+#include "PreferenceStore.h"
+#include "outfit/Children.h"
 #include "outfit/OutfitAssignments.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
 #include "outfit/OutfitTransfer.h"
+#include "persistence/JsonFile.h"
+#include "player/PlayerTarget.h"
+#include "player/PlayerWardrobe.h"
 #include "preview/TailorPreviewSession.h"
 #include "wig/CustomColorLibrary.h"
 #include "wig/WigAssignments.h"
@@ -18,11 +24,92 @@
 #include <limits>
 #include <stdexcept>
 
-extern Meridian::UI::View::IViewAPI* g_MeridianView;
-extern Meridian::UI::Input::IInputAPI* g_MeridianInput;
 
 namespace
 {
+    // Native Dispatch and lifecycle events share the game task queue. Recheck at
+    // the final mutation too: a close/load can run after Dispatch but before a
+    // callback's queued operation is drained.
+    // An action that throws would end the game, and one that stops part-way can leave the screen waiting for an answer
+    // (an import or export, Default Hair) with Back blocked. So Tailor logs it, closes, and says so on the HUD.
+    void QueueOpenAction(std::function<void()> action)
+    {
+        const auto generation = TailorUI::GetSingleton().OpenGeneration();
+        SKSE::GetTaskInterface()->AddTask([generation, action = std::move(action)]() {
+            auto& ui = TailorUI::GetSingleton();
+            try {
+                if (ui.IsOpen() && generation && generation == ui.OpenGeneration()) action();
+            } catch (const std::exception& e) {
+                logger::error("TailorUI: an action failed, so Tailor is closing: {}", e.what());
+                ui.CloseForLifecycle(Tailor::Preview::EndReason::FocusLost);
+                RE::SendHUDMessage::ShowHUDMessage(TailorUI::kClosedAfterError);
+            } catch (...) {
+                logger::error("TailorUI: an action failed on an unknown error, so Tailor is closing");
+                ui.CloseForLifecycle(Tailor::Preview::EndReason::FocusLost);
+                RE::SendHUDMessage::ShowHUDMessage(TailorUI::kClosedAfterError);
+            }
+        });
+    }
+
+    // Outfits and categories change only while both their files can be saved. A file Tailor couldn't fully read at
+    // startup has its saves off for the session, and a change made then would be lost at the
+    // next start, or leave the two files disagreeing. Each handler asks once, first, before it changes anything.
+    bool LibraryWritable()
+    {
+        return OutfitStore::GetSingleton().SaveAllowed() && OutfitLibrary::GetSingleton().SaveAllowed();
+    }
+
+    constexpr std::string_view kLibraryReadOnly =
+        "Outfits and categories can't be changed: Tailor couldn't fully read outfits.json or library.json. See Tailor.log.";
+    constexpr std::string_view kAssignmentsReadOnly =
+        "Outfits can't be deleted: Tailor couldn't fully read assignments.json. See Tailor.log.";
+    // The store refused to make it (no id is left), and its log says why.
+    constexpr std::string_view kOutfitNotCreated = "Tailor couldn't create the outfit. See Tailor.log.";
+    constexpr std::string_view kCategoryNotCreated = "Tailor couldn't create the category. See Tailor.log.";
+
+    // A save that failed. The change holds until the game closes, unless the handler takes it back.
+    std::string SaveFailed(std::string_view file)
+    {
+        return std::format("Tailor couldn't save {}. See Tailor.log.", file);
+    }
+
+    // A refused editor save. The screen has already left the editor, so the preview ends here, or the NPC would
+    // stay in the pieces they were trying on.
+    void RefuseEditorSave()
+    {
+        TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+        OutfitManager::GetSingleton().EndCreateOutfit();
+    }
+
+    // One wig for wiggyAddWig. It is added when it is a wig the game has loaded, in a category the library has.
+    // Anything else (a missing field, an unknown category, or a plugin name that matches no loaded plugin, which is
+    // what a name with bytes that weren't valid UTF-8 becomes on its way from the screen) is skipped and logged, and
+    // returns false. A wig already in the library returns true: AddWig leaves it where it is.
+    bool AddWigRow(const nlohmann::json& row)
+    {
+        if (!row.is_object() || !row.contains("category") || !row.at("category").is_number_integer() ||
+            !row.contains("formId") || !row.at("formId").is_number_integer() ||
+            !row.contains("plugin") || !row.at("plugin").is_string() || !row.contains("name") || !row.at("name").is_string()) {
+            logger::warn("wiggyAddWig: a wig is missing its category, formId, plugin or name; skipped");
+            return false;
+        }
+        const auto category = row.at("category").get<std::int64_t>();
+        if (category < 0 || category >= static_cast<std::int64_t>(kCategoryCount)) {
+            logger::warn("wiggyAddWig: invalid category {}; skipped", category);
+            return false;
+        }
+        WigEntry entry;
+        entry.formId = row.at("formId").get<RE::FormID>();
+        entry.plugin = row.at("plugin").get<std::string>();
+        entry.name = row.at("name").get<std::string>();
+        if (!entry.Resolve()) {
+            logger::warn("wiggyAddWig: {:06X} in '{}' is not an armor the game has loaded; skipped", entry.formId, entry.plugin);
+            return false;
+        }
+        WigLibrary::GetSingleton().AddWig(static_cast<WigCategory>(category), entry);
+        return true;
+    }
+
     std::vector<int> ReadOutfitCategoryIds(const nlohmann::json& data, int outfitId = 0)
     {
         auto& library = OutfitLibrary::GetSingleton();
@@ -51,6 +138,16 @@ namespace
             if (!library.GetCategoryById(id)) throw std::invalid_argument("Outfit category no longer exists");
         }
         return ids;
+    }
+
+    // The sex a save or edit asks for. A request without one keeps `current`;
+    // anything but -1, 0 or 1 is refused.
+    OutfitSex ReadRequestedSex(const nlohmann::json& data, OutfitSex current)
+    {
+        if (!data.contains("sex")) return current;
+        const auto sex = ReadOutfitSex(data.at("sex"));
+        if (!sex) throw std::invalid_argument("Invalid outfit sex");
+        return *sex;
     }
 
     int CalcOutfitArmorRating(const CustomOutfit& outfit)
@@ -129,8 +226,7 @@ namespace
         }
 
         // The focus menu tears down asynchronously over the next few frames
-        // (Meridian closes it through the UI message queue, same as PrismaUI
-        // did), and the engine re-derives data.running during that teardown —
+        // through the UI message queue, and the engine re-derives data.running
         // so a synchronous write here gets clobbered (player ends up walking).
         // A single AddTask won't help: from inside our task-dispatched close path
         // it drains the same frame. Defer past teardown with short real-time
@@ -162,52 +258,52 @@ TailorUI& TailorUI::GetSingleton()
     return singleton;
 }
 
+void TailorUI::RegisterAction(std::string name, std::function<void(const char*)> callback)
+{
+    _actions.emplace(std::move(name), std::move(callback));
+}
+
+void TailorUI::Publish(std::string topic, nlohmann::json data)
+{
+    Tailor::ImGuiUI::ImGuiHost::GetSingleton().Publish(std::move(topic), std::move(data));
+}
+
+void TailorUI::Dispatch(std::string name, std::string data, std::uint64_t openGeneration)
+{
+    SKSE::GetTaskInterface()->AddTask([this, name = std::move(name), data = std::move(data), openGeneration]() {
+        if (!IsOpen() || !openGeneration || openGeneration != OpenGeneration()) {
+            logger::warn("TailorUI: dropped '{}' for a closed or reopened menu", name);
+            return;
+        }
+        if (const auto action = _actions.find(name); action != _actions.end()) {
+            action->second(data.c_str());
+        } else {
+            logger::warn("TailorUI: no handler for '{}'", name);
+        }
+    });
+}
+
 void TailorUI::Initialize()
 {
-    if (!g_MeridianView) {
-        logger::error("TailorUI: Meridian.View/1 not available");
-        return;
-    }
-
-    Meridian::UI::View::ViewCreateInfo viewInfo{};
-    viewInfo.ownerName = "tailor";
-    viewInfo.viewName = "main";
-    viewInfo.startUrl = "mod://tailor/index.html";
-    viewInfo.initiallyVisible = false;
-    viewInfo.onDOMReady = [](Meridian::UI::View::ViewHandle view) {
-        logger::info("TailorUI: DOM ready");
-        SKSE::GetTaskInterface()->AddTask([view]() {
-            auto& ui = TailorUI::GetSingleton();
-            if (ui._view != view) return;
-            ui.ConfigureController();
-            g_MeridianView->ExecuteJavaScript(view, "window.TailorController?.init()");
-        });
-    };
-    _view = g_MeridianView->CreateView(&viewInfo);
-
-    if (_view == Meridian::UI::View::INVALID_VIEW_HANDLE) {
-        logger::error("TailorUI: failed to create Meridian view");
-        return;
-    }
-
+    if (_initialized) return;
     // ================================================================
-    // OUTFIT JS -> C++ Listeners (33)
+    // OUTFIT native actions (33)
     // ================================================================
 
     // 1. tailorSelectCategory — start cycling in a category
-    g_MeridianView->RegisterListener(_view, "tailorSelectCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorSelectCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int id = json.value("id", 0);
                 const int situation = json.value("situation", 0);
-                if (situation < 0 || situation > 4) return;
+                if (situation < 0 || situation > kLastOutfitSituation) return;
                 auto& ui = TailorUI::GetSingleton();
                 if (OutfitManager::GetSingleton().StartCycle(id, static_cast<OutfitSituation>(situation))) {
                     ui.SendCycleState();
                 } else {
                     ui.SendSituationData();
-                    g_MeridianView->ExecuteJavaScript(ui._view, "tailorCycleUnavailable()");
+                    ui.Publish("tailorCycleUnavailable");
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorSelectCategory: {}", e.what());
@@ -216,24 +312,24 @@ void TailorUI::Initialize()
     });
 
     // 2. tailorCycleNext
-    g_MeridianView->RegisterListener(_view, "tailorCycleNext", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorCycleNext", [](const char*) {
+        QueueOpenAction([]() {
             OutfitManager::GetSingleton().CycleNext();
             TailorUI::GetSingleton().SendCycleState();
         });
     });
 
     // 3. tailorCyclePrev
-    g_MeridianView->RegisterListener(_view, "tailorCyclePrev", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorCyclePrev", [](const char*) {
+        QueueOpenAction([]() {
             OutfitManager::GetSingleton().CyclePrev();
             TailorUI::GetSingleton().SendCycleState();
         });
     });
 
     // 3b. tailorCycleToIndex — jump to a specific index in the cycle list
-    g_MeridianView->RegisterListener(_view, "tailorCycleToIndex", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorCycleToIndex", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int index = json.value("index", -1);
@@ -246,23 +342,23 @@ void TailorUI::Initialize()
     });
 
     // 4. tailorConfirmCycle
-    g_MeridianView->RegisterListener(_view, "tailorConfirmCycle", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorConfirmCycle", [](const char*) {
+        QueueOpenAction([]() {
             OutfitManager::GetSingleton().ConfirmCycle();
             TailorUI::GetSingleton().SendTargetUpdate();
         });
     });
 
     // 5. tailorCancelCycle
-    g_MeridianView->RegisterListener(_view, "tailorCancelCycle", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorCancelCycle", [](const char*) {
+        QueueOpenAction([]() {
             OutfitManager::GetSingleton().CancelCycle();
         });
     });
 
     // 6. tailorResetOutfit
-    g_MeridianView->RegisterListener(_view, "tailorResetOutfit", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorResetOutfit", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = OutfitManager::GetSingleton();
             auto* target = mgr.GetTarget();
             if (target) {
@@ -272,14 +368,14 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "tailorRequestTransferData", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestTransferData", [](const char*) {
+        QueueOpenAction([]() {
             auto& ui = TailorUI::GetSingleton();
             if (ui.IsOpen()) ui.SendTransferData();
         });
     });
-    g_MeridianView->RegisterListener(_view, "tailorExportOutfits", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([payload = std::string(arg)]() {
+    RegisterAction("tailorExportOutfits", [](const char* arg) {
+        QueueOpenAction([payload = std::string(arg)]() {
             auto& ui = TailorUI::GetSingleton();
             if (!ui.IsOpen()) return;
             nlohmann::json result;
@@ -296,17 +392,18 @@ void TailorUI::Initialize()
                 logger::warn("Outfit export failed: {}", error.what());
                 result = {{"ok", false}, {"operation", "export"}, {"error", error.what()}};
             }
-            const auto js = std::format("tailorTransferResult({})", result.dump());
-            g_MeridianView->ExecuteJavaScript(ui._view, js.c_str());
+            ui.Publish("tailorTransferResult", result);
             ui.SendTransferData();
         });
     });
-    g_MeridianView->RegisterListener(_view, "tailorImportOutfits", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([payload = std::string(arg)]() {
+    RegisterAction("tailorImportOutfits", [](const char* arg) {
+        QueueOpenAction([payload = std::string(arg)]() {
             auto& ui = TailorUI::GetSingleton();
             if (!ui.IsOpen()) return;
             nlohmann::json result;
             try {
+                // Refused like every change to outfits or categories, through the result the screen waits for.
+                if (!LibraryWritable()) throw std::runtime_error(std::string(kLibraryReadOnly));
                 const auto json = nlohmann::json::parse(payload);
                 result = OutfitTransfer::Import(json.at("file").get<std::string>());
                 ui.SendOutfits();
@@ -316,22 +413,25 @@ void TailorUI::Initialize()
                 logger::warn("Outfit import failed: {}", error.what());
                 result = {{"ok", false}, {"operation", "import"}, {"error", error.what()}};
             }
-            const auto js = std::format("tailorTransferResult({})", result.dump());
-            g_MeridianView->ExecuteJavaScript(ui._view, js.c_str());
+            ui.Publish("tailorTransferResult", result);
             ui.SendTransferData();
         });
     });
 
     // 7. tailorRequestOutfits — send all custom outfits
-    g_MeridianView->RegisterListener(_view, "tailorRequestOutfits", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestOutfits", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendOutfits();
         });
     });
 
     // 8. tailorAddOutfitToCategory
-    g_MeridianView->RegisterListener(_view, "tailorAddOutfitToCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorAddOutfitToCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int categoryId = json.value("categoryId", 0);
@@ -340,7 +440,7 @@ void TailorUI::Initialize()
                 if (categoryId > 0 && outfitId > 0) {
                     auto& lib = OutfitLibrary::GetSingleton();
                     lib.AddOutfitToCategory(categoryId, outfitId);
-                    lib.Save();
+                    if (!lib.Save()) TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
                     TailorUI::GetSingleton().SendCategoryOutfits(categoryId);
                     TailorUI::GetSingleton().SendCategories();
                 }
@@ -351,8 +451,12 @@ void TailorUI::Initialize()
     });
 
     // 9. tailorRemoveOutfitFromCategory
-    g_MeridianView->RegisterListener(_view, "tailorRemoveOutfitFromCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorRemoveOutfitFromCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int categoryId = json.value("categoryId", 0);
@@ -361,7 +465,7 @@ void TailorUI::Initialize()
                 if (categoryId > 0 && outfitId > 0) {
                     auto& lib = OutfitLibrary::GetSingleton();
                     lib.RemoveOutfitFromCategory(categoryId, outfitId);
-                    lib.Save();
+                    if (!lib.Save()) TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
                     TailorUI::GetSingleton().SendCategoryOutfits(categoryId);
                     TailorUI::GetSingleton().SendCategories();
                 }
@@ -372,8 +476,8 @@ void TailorUI::Initialize()
     });
 
     // 10. tailorRequestCategoryOutfits
-    g_MeridianView->RegisterListener(_view, "tailorRequestCategoryOutfits", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorRequestCategoryOutfits", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int id = json.value("id", 0);
@@ -387,8 +491,17 @@ void TailorUI::Initialize()
     });
 
     // 11. tailorDeleteOutfit
-    g_MeridianView->RegisterListener(_view, "tailorDeleteOutfit", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorDeleteOutfit", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
+            // Deleting also releases everyone assigned the outfit, which changes assignments.json.
+            if (!OutfitAssignments::GetSingleton().SaveAllowed()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kAssignmentsReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int outfitId = json.value("outfitId", 0);
@@ -398,14 +511,22 @@ void TailorUI::Initialize()
                     auto& lib = OutfitLibrary::GetSingleton();
 
                     lib.RemoveOutfitFromAllCategories(outfitId);
-                    lib.Save();
+                    const bool librarySaved = lib.Save();
                     store.DeleteOutfit(outfitId);
-                    store.Save();
+                    const bool outfitsSaved = store.Save();
+                    // The outfit is gone for this session either way; the player is told a file couldn't be saved.
+                    if (!librarySaved || !outfitsSaved) {
+                        TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed(!outfitsSaved && !librarySaved ? "outfits.json and library.json" :
+                            outfitsSaved ? "library.json" : "outfits.json"));
+                    }
 
-                    OutfitAssignments::GetSingleton().RemoveOutfitFromAllAssignments(outfitId);
+                    // After the store forgets it, so nobody is redressed in it again.
+                    OutfitManager::GetSingleton().ReleaseDeletedOutfit(outfitId);
 
                     TailorUI::GetSingleton().SendOutfits();
                     TailorUI::GetSingleton().SendCategories();
+                    TailorUI::GetSingleton().SendTargetUpdate();
+                    TailorUI::GetSingleton().SendSituationData();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorDeleteOutfit: {}", e.what());
@@ -414,8 +535,8 @@ void TailorUI::Initialize()
     });
 
     // 11b. tailorCheckOutfitUsage
-    g_MeridianView->RegisterListener(_view, "tailorCheckOutfitUsage", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorCheckOutfitUsage", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int outfitId = json.value("outfitId", 0);
@@ -429,15 +550,15 @@ void TailorUI::Initialize()
     });
 
     // 12. tailorRequestArmorPlugins
-    g_MeridianView->RegisterListener(_view, "tailorRequestArmorPlugins", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestArmorPlugins", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendArmorPlugins();
         });
     });
 
     // 13. tailorRequestArmorForPlugin
-    g_MeridianView->RegisterListener(_view, "tailorRequestArmorForPlugin", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorRequestArmorForPlugin", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto plugin = json.value("plugin", std::string{});
@@ -451,8 +572,8 @@ void TailorUI::Initialize()
     });
 
     // 14. tailorEquipArmorItem
-    g_MeridianView->RegisterListener(_view, "tailorEquipArmorItem", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorEquipArmorItem", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 ArmorItem item;
@@ -472,8 +593,8 @@ void TailorUI::Initialize()
     });
 
     // 15. tailorUnequipArmorItem
-    g_MeridianView->RegisterListener(_view, "tailorUnequipArmorItem", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorUnequipArmorItem", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 ArmorItem item;
@@ -493,8 +614,8 @@ void TailorUI::Initialize()
     });
 
     // 16. tailorBeginCreateOutfit
-    g_MeridianView->RegisterListener(_view, "tailorBeginCreateOutfit", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorBeginCreateOutfit", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = OutfitManager::GetSingleton();
             auto* target = mgr.GetTarget();
             if (target) {
@@ -504,12 +625,17 @@ void TailorUI::Initialize()
     });
 
     // 17. tailorSaveOutfit
-    g_MeridianView->RegisterListener(_view, "tailorSaveOutfit", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorSaveOutfit", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                RefuseEditorSave();
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("name", std::string{});
                 const auto categoryIds = ReadOutfitCategoryIds(json);
+                const auto sex = ReadRequestedSex(json, OutfitSex::Unisex);
 
                 std::vector<ArmorItem> items;
                 if (json.contains("items") && json["items"].is_array()) {
@@ -524,12 +650,32 @@ void TailorUI::Initialize()
 
                 if (!name.empty() && !items.empty()) {
                     auto& store = OutfitStore::GetSingleton();
-                    int outfitId = store.AddOutfit(name, items);
-                    store.Save();
+                    // A taken name is refused with a message; nothing is saved or changed.
+                    if (store.NameTaken(name)) {
+                        TailorUI::GetSingleton().Publish("toast", {{"message", std::format("An outfit named '{}' already exists", name)}, {"kind", "danger"}});
+                        return;
+                    }
+                    int outfitId = store.AddOutfit(name, items, sex);
+                    // Refused by the store (no id is left): say so, and end the editor the screen has already left.
+                    if (outfitId == 0) {
+                        TailorUI::GetSingleton().ShowLibraryProblem(kOutfitNotCreated);
+                        OutfitManager::GetSingleton().EndCreateOutfit();
+                        return;
+                    }
+                    // An outfit that couldn't be saved is taken back, so its id never reaches an assignment or the
+                    // co-save. The editor still closes: the screen has already left it.
+                    if (!store.Save()) {
+                        store.DiscardNewOutfit(outfitId);
+                        TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("outfits.json"));
+                        OutfitManager::GetSingleton().EndCreateOutfit();
+                        TailorUI::GetSingleton().SendOutfits();
+                        return;
+                    }
 
                     auto& lib = OutfitLibrary::GetSingleton();
                     lib.SetOutfitCategories(outfitId, categoryIds);
-                    lib.Save();
+                    // The outfit itself is saved; categories that couldn't be saved hold for this session.
+                    if (!lib.Save()) TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
 
                     OutfitManager::GetSingleton().EndCreateOutfit();
 
@@ -545,22 +691,22 @@ void TailorUI::Initialize()
     });
 
     // 18. tailorCancelCreateOutfit
-    g_MeridianView->RegisterListener(_view, "tailorCancelCreateOutfit", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorCancelCreateOutfit", [](const char*) {
+        QueueOpenAction([]() {
             OutfitManager::GetSingleton().EndCreateOutfit();
         });
     });
 
     // 19. tailorClose
-    g_MeridianView->RegisterListener(_view, "tailorClose", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorClose", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().Close();
         });
     });
 
     // 20. tailorRequestOutfitData
-    g_MeridianView->RegisterListener(_view, "tailorRequestOutfitData", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorRequestOutfitData", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int outfitId = json.value("outfitId", 0);
@@ -582,8 +728,8 @@ void TailorUI::Initialize()
 
     // Manage Outfits row preview uses the same temporary session and cleanup as
     // the editor, without populating editor fields or saving an assignment.
-    g_MeridianView->RegisterListener(_view, "tailorPreviewOutfit", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorPreviewOutfit", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             if (!TailorUI::GetSingleton().IsOpen()) return;
             try {
                 const auto json = nlohmann::json::parse(d);
@@ -591,6 +737,11 @@ void TailorUI::Initialize()
                 auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
                 auto& mgr = OutfitManager::GetSingleton();
                 auto* target = mgr.GetTarget();
+                // The screen refuses these with its toast; never dress the target in one anyway.
+                if (outfit && target && !OutfitFits(outfit->sex, OutfitManager::GetNpcSex(target))) {
+                    logger::info("tailorPreviewOutfit: '{}' does not fit {}", outfit->name, target->GetDisplayFullName());
+                    return;
+                }
                 if (outfit && target) {
                     mgr.LoadCreateOutfitItems(target, outfit->items);
                 }
@@ -601,13 +752,21 @@ void TailorUI::Initialize()
     });
 
     // 21. tailorUpdateOutfit
-    g_MeridianView->RegisterListener(_view, "tailorUpdateOutfit", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorUpdateOutfit", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                RefuseEditorSave();
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int outfitId = json.value("outfitId", 0);
                 auto name = json.value("name", std::string{});
                 const auto categoryIds = ReadOutfitCategoryIds(json, outfitId);
+                // A request without a sex keeps the one the outfit has.
+                const auto* existing = OutfitStore::GetSingleton().GetOutfitById(outfitId);
+                const auto previousSex = existing ? existing->sex : OutfitSex::Unisex;
+                const auto sex = ReadRequestedSex(json, previousSex);
 
                 std::vector<ArmorItem> items;
                 if (json.contains("items") && json["items"].is_array()) {
@@ -622,17 +781,32 @@ void TailorUI::Initialize()
 
                 if (outfitId > 0 && !name.empty() && !items.empty()) {
                     auto& store = OutfitStore::GetSingleton();
-                    if (!store.UpdateOutfit(outfitId, name, items)) return;
-                    store.Save();
+                    if (store.NameTaken(name, outfitId)) {
+                        TailorUI::GetSingleton().Publish("toast", {{"message", std::format("An outfit named '{}' already exists", name)}, {"kind", "danger"}});
+                        return;
+                    }
+                    if (!store.UpdateOutfit(outfitId, name, items, sex)) return;
+                    const bool outfitsSaved = store.Save();
 
                     auto& lib = OutfitLibrary::GetSingleton();
                     lib.SetOutfitCategories(outfitId, categoryIds);
-                    lib.Save();
+                    const bool librarySaved = lib.Save();
+                    // An edit that couldn't be saved holds for this session; nothing is taken back.
+                    if (!outfitsSaved || !librarySaved) {
+                        TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed(!outfitsSaved && !librarySaved ? "outfits.json and library.json" :
+                            outfitsSaved ? "library.json" : "outfits.json"));
+                    }
 
+                    // Before the editor closes: it redresses its own NPC, and the rest are redressed here.
+                    if (sex != previousSex) OutfitManager::GetSingleton().RefitOutfits({outfitId});
                     OutfitManager::GetSingleton().EndCreateOutfit();
+                    // The player may be wearing the outfit just edited, from any session.
+                    if (Tailor::Player::PlayerWardrobe::GetSingleton().WornOutfitId() == outfitId) OutfitManager::GetSingleton().RedressPlayer();
 
                     TailorUI::GetSingleton().SendOutfits();
                     TailorUI::GetSingleton().SendCategories();
+                    TailorUI::GetSingleton().SendSituationData();
+                    TailorUI::GetSingleton().SendTargetUpdate();
                     logger::info("Updated outfit '{}' (id={}) with {} items", name, outfitId, items.size());
                 }
             } catch (const std::exception& e) {
@@ -642,15 +816,19 @@ void TailorUI::Initialize()
     });
 
     // 22. tailorRequestAllCategories
-    g_MeridianView->RegisterListener(_view, "tailorRequestAllCategories", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestAllCategories", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendAllCategories();
         });
     });
 
     // 23. tailorAddCategory
-    g_MeridianView->RegisterListener(_view, "tailorAddCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorAddCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("name", std::string{});
@@ -658,8 +836,21 @@ void TailorUI::Initialize()
                 if (name.empty()) return;
 
                 auto& lib = OutfitLibrary::GetSingleton();
-                lib.AddCategory(name);
-                lib.Save();
+                if (lib.CategoryNameTaken(name)) {
+                    TailorUI::GetSingleton().Publish("toast", {{"message", std::format("A category named '{}' already exists", name)}, {"kind", "danger"}});
+                    return;
+                }
+                const int categoryId = lib.AddCategory(name);
+                // Refused by the library (no id is left): say so, since the screen has already cleared the name.
+                if (categoryId == 0) {
+                    TailorUI::GetSingleton().ShowLibraryProblem(kCategoryNotCreated);
+                    return;
+                }
+                // A new category that couldn't be saved is taken back, so its id is never in use unsaved.
+                if (!lib.Save()) {
+                    lib.DeleteCategory(categoryId);
+                    TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
+                }
                 TailorUI::GetSingleton().SendAllCategories();
                 TailorUI::GetSingleton().SendCategories();
             } catch (const nlohmann::json::exception& e) {
@@ -669,8 +860,12 @@ void TailorUI::Initialize()
     });
 
     // 24. tailorRenameCategory
-    g_MeridianView->RegisterListener(_view, "tailorRenameCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorRenameCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int categoryId = json.value("categoryId", 0);
@@ -678,8 +873,12 @@ void TailorUI::Initialize()
 
                 if (categoryId > 0 && !name.empty()) {
                     auto& lib = OutfitLibrary::GetSingleton();
-                    lib.RenameCategory(categoryId, name);
-                    lib.Save();
+                    if (lib.CategoryNameTaken(name, categoryId)) {
+                        TailorUI::GetSingleton().Publish("toast", {{"message", std::format("A category named '{}' already exists", name)}, {"kind", "danger"}});
+                        return;
+                    }
+                    if (!lib.RenameCategory(categoryId, name)) return;
+                    if (!lib.Save()) TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
                     TailorUI::GetSingleton().SendAllCategories();
                     TailorUI::GetSingleton().SendCategories();
                 }
@@ -690,8 +889,12 @@ void TailorUI::Initialize()
     });
 
     // 25. tailorDeleteCategory
-    g_MeridianView->RegisterListener(_view, "tailorDeleteCategory", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorDeleteCategory", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int categoryId = json.value("categoryId", 0);
@@ -699,7 +902,7 @@ void TailorUI::Initialize()
                 if (categoryId > 0) {
                     auto& lib = OutfitLibrary::GetSingleton();
                     lib.DeleteCategory(categoryId);
-                    lib.Save();
+                    if (!lib.Save()) TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
                     TailorUI::GetSingleton().SendAllCategories();
                     TailorUI::GetSingleton().SendCategories();
                 }
@@ -710,19 +913,28 @@ void TailorUI::Initialize()
     });
 
     // 26. tailorRequestBlacklist
-    g_MeridianView->RegisterListener(_view, "tailorRequestBlacklist", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestBlacklist", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendBlacklistData();
         });
     });
 
     // 27. tailorBlacklistPlugin
-    g_MeridianView->RegisterListener(_view, "tailorBlacklistPlugin", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorBlacklistPlugin", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("plugin", std::string{});
                 if (!name.empty()) {
+                    // Only a plugin the game has loaded: a name with bytes that weren't valid UTF-8 arrives with U+FFFD in
+                    // their place and would match nothing. LookupModByName also finds a plugin that is in Data but not
+                    // active, whose compile index is 0xFF.
+                    auto* data = RE::TESDataHandler::GetSingleton();
+                    const auto* file = data ? data->LookupModByName(name) : nullptr;
+                    if (!file || file->compileIndex == 0xFF) {
+                        logger::warn("tailorBlacklistPlugin: '{}' is not a plugin the game has loaded; not blacklisted", name);
+                        return;
+                    }
                     auto& ui = TailorUI::GetSingleton();
                     ui.BlacklistPlugin(name);
                     ui.SendBlacklistData();
@@ -734,8 +946,8 @@ void TailorUI::Initialize()
     });
 
     // 28. tailorUnblacklistPlugin
-    g_MeridianView->RegisterListener(_view, "tailorUnblacklistPlugin", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorUnblacklistPlugin", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("plugin", std::string{});
@@ -751,8 +963,8 @@ void TailorUI::Initialize()
     });
 
     // 29. tailorClearBlacklist
-    g_MeridianView->RegisterListener(_view, "tailorClearBlacklist", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorClearBlacklist", [](const char*) {
+        QueueOpenAction([]() {
             auto& ui = TailorUI::GetSingleton();
             ui.ClearBlacklist();
             ui.SendBlacklistData();
@@ -760,14 +972,14 @@ void TailorUI::Initialize()
     });
 
     // 30. tailorRequestSituations
-    g_MeridianView->RegisterListener(_view, "tailorRequestSituations", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorRequestSituations", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendSituationData();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "tailorSetAdventuringArmorType", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorSetAdventuringArmorType", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             auto& ui = TailorUI::GetSingleton();
             if (!ui.IsOpen()) return;
             try {
@@ -792,13 +1004,13 @@ void TailorUI::Initialize()
     });
 
     // 31. tailorConfirmSituationCycle
-    g_MeridianView->RegisterListener(_view, "tailorConfirmSituationCycle", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorConfirmSituationCycle", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int sit = json.value("situation", 0);
                 logger::info("tailorConfirmSituationCycle: situation={}", sit);
-                if (sit >= 1 && sit <= 4) {
+                if (sit >= 1 && sit <= kLastOutfitSituation) {
                     auto& mgr = OutfitManager::GetSingleton();
                     bool ok = mgr.ConfirmCycle(static_cast<OutfitSituation>(sit));
                     logger::info("tailorConfirmSituationCycle: ConfirmCycle={}", ok);
@@ -809,6 +1021,7 @@ void TailorUI::Initialize()
                         logger::warn("tailorConfirmSituationCycle: no target after confirm!");
                     }
                     TailorUI::GetSingleton().SendSituationData();
+                    TailorUI::GetSingleton().SendTargetUpdate();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorConfirmSituationCycle: {}", e.what());
@@ -817,14 +1030,14 @@ void TailorUI::Initialize()
     });
 
     // 32. tailorClearSituation
-    g_MeridianView->RegisterListener(_view, "tailorClearSituation", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorClearSituation", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int sit = json.value("situation", 0);
                 auto& mgr = OutfitManager::GetSingleton();
                 auto* target = mgr.GetTarget();
-                if (target && sit >= 1 && sit <= 4) {
+                if (target && sit >= 1 && sit <= kLastOutfitSituation) {
                     auto& assignments = OutfitAssignments::GetSingleton();
                     const auto* saved = assignments.GetAssignment(target->GetFormID());
                     if (!saved || !saved->HasOutfits()) return;
@@ -848,8 +1061,8 @@ void TailorUI::Initialize()
     });
 
     // 33. tailorClearAllSituations
-    g_MeridianView->RegisterListener(_view, "tailorClearAllSituations", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("tailorClearAllSituations", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = OutfitManager::GetSingleton();
             auto* target = mgr.GetTarget();
             if (target) {
@@ -869,15 +1082,15 @@ void TailorUI::Initialize()
     });
 
     // 34. tailorToggleSituationRandom
-    g_MeridianView->RegisterListener(_view, "tailorToggleSituationRandom", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorToggleSituationRandom", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int sit = json.value("situation", 0);
                 bool random = json.value("random", false);
                 auto& mgr = OutfitManager::GetSingleton();
                 auto* target = mgr.GetTarget();
-                if (target && sit >= 1 && sit <= 4) {
+                if (target && sit >= 1 && sit <= kLastOutfitSituation) {
                     auto& assignments = OutfitAssignments::GetSingleton();
                     const auto* saved = assignments.GetAssignment(target->GetFormID());
                     if ((!saved || !saved->HasOutfits()) && !random) return;
@@ -901,8 +1114,12 @@ void TailorUI::Initialize()
     });
 
     // 35. tailorCopyOutfit
-    g_MeridianView->RegisterListener(_view, "tailorCopyOutfit", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorCopyOutfit", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
             try {
                 auto json = nlohmann::json::parse(d);
                 int  outfitId = json.value("outfitId", 0);
@@ -918,14 +1135,30 @@ void TailorUI::Initialize()
                     logger::warn("tailorCopyOutfit: source outfit {} not found", outfitId);
                     return;
                 }
+                if (store.NameTaken(name)) {
+                    TailorUI::GetSingleton().Publish("toast", {{"message", std::format("An outfit named '{}' already exists", name)}, {"kind", "danger"}});
+                    return;
+                }
 
                 // Copy out before AddOutfit — it push_backs into the same vector `source`
                 // points into, so the pointer can dangle the moment it reallocates.
                 auto sourceName = source->name;
                 auto items = source->items;
+                const auto sex = source->sex;
 
-                int newId = store.AddOutfit(name, items);
-                store.Save();
+                int newId = store.AddOutfit(name, items, sex);
+                // Refused by the store (no id is left): say so.
+                if (newId == 0) {
+                    TailorUI::GetSingleton().ShowLibraryProblem(kOutfitNotCreated);
+                    return;
+                }
+                // A copy that couldn't be saved is taken back, so its id never reaches an assignment or the co-save.
+                if (!store.Save()) {
+                    store.DiscardNewOutfit(newId);
+                    TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("outfits.json"));
+                    TailorUI::GetSingleton().SendOutfits();
+                    return;
+                }
 
                 // Mirror the source's category membership so the copy lands beside it.
                 auto& lib = OutfitLibrary::GetSingleton();
@@ -941,8 +1174,9 @@ void TailorUI::Initialize()
                 for (int catId : targetCategories) {
                     lib.AddOutfitToCategory(catId, newId);
                 }
-                if (!targetCategories.empty()) {
-                    lib.Save();
+                // The copy itself is saved; categories that couldn't be saved hold for this session.
+                if (!targetCategories.empty() && !lib.Save()) {
+                    TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("library.json"));
                 }
 
                 TailorUI::GetSingleton().SendOutfits();
@@ -955,11 +1189,49 @@ void TailorUI::Initialize()
         });
     });
 
+    // 36. tailorSetOutfitSex — tag every outfit Manage Outfits shows
+    RegisterAction("tailorSetOutfitSex", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!LibraryWritable()) {
+                TailorUI::GetSingleton().ShowLibraryProblem(kLibraryReadOnly);
+                return;
+            }
+            auto& ui = TailorUI::GetSingleton();
+            try {
+                const auto json = nlohmann::json::parse(d);
+                const auto sex = ReadOutfitSex(json.at("sex"));
+                if (!sex || !json.at("outfitIds").is_array()) throw std::invalid_argument("Invalid outfit sex request");
+                std::vector<int> ids;
+                for (const auto& id : json.at("outfitIds")) {
+                    if (!id.is_number_integer() || id <= 0 || id > (std::numeric_limits<int>::max)()) throw std::invalid_argument("Invalid outfit selection");
+                    ids.push_back(id.get<int>());
+                }
+                auto& store = OutfitStore::GetSingleton();
+                const auto result = store.SetOutfitSex(ids, *sex);
+                bool saved = true;
+                // Only an outfit whose sex changed can change who may wear it.
+                if (!result.changed.empty()) {
+                    saved = store.Save();
+                    OutfitManager::GetSingleton().RefitOutfits(result.changed);
+                }
+                // The success toast only for a change that was saved, or it would overwrite the failure's.
+                if (saved) ui.Publish("toast", std::format("Set {} {} to {}", result.tagged, result.tagged == 1 ? "outfit" : "outfits", OutfitSexName(*sex)));
+                else ui.ShowLibraryProblem(SaveFailed("outfits.json"));
+            } catch (const std::exception& e) {
+                logger::error("tailorSetOutfitSex: {}", e.what());
+            }
+            ui.SendOutfits();
+            ui.SendCategories();
+            ui.SendSituationData();
+            ui.SendTargetUpdate();
+        });
+    });
+
     // ================================================================
-    // WIG JS -> C++ Listeners (21)
+    // WIG native actions (21)
     // ================================================================
 
-    g_MeridianView->RegisterListener(_view, "wiggySelectCategory", [](const char* arg) {
+    RegisterAction("wiggySelectCategory", [](const char* arg) {
         try {
             auto json = nlohmann::json::parse(arg);
             int catIdx = json.value("category", -1);
@@ -969,14 +1241,16 @@ void TailorUI::Initialize()
             }
 
             auto category = static_cast<WigCategory>(catIdx);
-            SKSE::GetTaskInterface()->AddTask([category]() {
+            QueueOpenAction([category]() {
                 auto& mgr = WigManager::GetSingleton();
                 auto* target = mgr.GetTarget();
                 if (!target) {
                     logger::warn("wiggySelectCategory: no target");
                     return;
                 }
-                mgr.StartCycling(target, category);
+                const bool started = mgr.StartCycling(target, category);
+                logger::info("wiggySelectCategory: category {} on {:08X} {} with {} wig(s)",
+                    static_cast<int>(category), target->GetFormID(), started ? "started" : "did not start", mgr.GetCycleCount());
                 TailorUI::GetSingleton().SendWigCycleState();
             });
         } catch (const nlohmann::json::exception& e) {
@@ -984,22 +1258,22 @@ void TailorUI::Initialize()
         }
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyCycleNext", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyCycleNext", [](const char*) {
+        QueueOpenAction([]() {
             WigManager::GetSingleton().CycleNext();
             TailorUI::GetSingleton().SendWigCycleState();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyCyclePrev", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyCyclePrev", [](const char*) {
+        QueueOpenAction([]() {
             WigManager::GetSingleton().CyclePrev();
             TailorUI::GetSingleton().SendWigCycleState();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyCycleToIndex", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyCycleToIndex", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int index = json.value("index", -1);
@@ -1011,64 +1285,67 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyConfirmCycle", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyConfirmCycle", [](const char*) {
+        QueueOpenAction([]() {
             WigManager::GetSingleton().ConfirmCycle();
+            TailorUI::GetSingleton().SendWigTargetUpdate();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyCancelCycle", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyCancelCycle", [](const char*) {
+        QueueOpenAction([]() {
             WigManager::GetSingleton().CancelCycle();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyResetWig", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyResetWig", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = WigManager::GetSingleton();
             auto* target = mgr.GetTarget();
-            if (target) {
-                mgr.ResetWig(target);
-            }
-            if (mgr.IsCycling()) {
-                mgr.ConfirmCycle();
-            }
+            const bool success = mgr.ResetToDefaultHair(target);
+            auto& ui = TailorUI::GetSingleton();
+            ui.SendWigTargetUpdate();
+            ui.SendWigSituationData();
+            ui.SendWigCycleState();
+            ui.SendDefaultHairResult(success);
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyRequestMods", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyRequestMods", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendModWigs();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyAddWig", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyAddWig", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
-                auto json = nlohmann::json::parse(d);
-                int catIdx = json.value("category", -1);
-                if (catIdx < 0 || catIdx >= static_cast<int>(kCategoryCount)) {
-                    logger::warn("wiggyAddWig: invalid category {}", catIdx);
-                    return;
-                }
-
-                WigEntry entry;
-                entry.formId = json.value("formId", static_cast<RE::FormID>(0));
-                entry.plugin = json.value("plugin", std::string{});
-                entry.name = json.value("name", std::string{});
-
-                auto category = static_cast<WigCategory>(catIdx);
-                WigLibrary::GetSingleton().AddWig(category, entry);
-                WigLibrary::GetSingleton().Save();
-                TailorUI::GetSingleton().SendWigCategories();
+                const auto json = nlohmann::json::parse(d);
+                // Add All sends every wig in one {"wigs": [...]}, so the library is saved, and the screen told, once; a
+                // row's Add sends the wig itself. A wig AddWigRow skips is counted and logged; the rest still go in.
+                const bool batch = json.is_object() && json.contains("wigs");
+                const auto rows = batch ? json.at("wigs") : nlohmann::json::array({json});
+                auto& library = WigLibrary::GetSingleton();
+                const auto revision = library.Revision();
+                std::size_t skipped = rows.is_array() ? 0 : 1;
+                if (rows.is_array()) for (const auto& row : rows) if (!AddWigRow(row)) ++skipped;
+                const auto added = library.Revision() - revision;
+                if (added) library.Save();
+                auto& ui = TailorUI::GetSingleton();
+                // The original view's wording: "<name>" added to library, N wigs added to library. A
+                // wig already in the library adds nothing and says nothing; a skipped one says so in red.
+                const auto count = std::format("{} {} added to library", added, added == 1 ? "wig" : "wigs");
+                if (skipped) ui.Publish("toast", {{"message", batch ? std::format("{}; {} couldn't be added. See Tailor.log.", count, skipped) : std::string("Tailor couldn't add that wig. See Tailor.log.")}, {"kind", "danger"}});
+                else if (added) ui.Publish("toast", batch ? count : std::format("\"{}\" added to library", json.at("name").get<std::string>()));
+                ui.SendWigCategories();
             } catch (const nlohmann::json::exception& e) {
                 logger::error("wiggyAddWig: JSON parse error: {}", e.what());
             }
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyRemoveWig", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyRemoveWig", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int catIdx = json.value("category", -1);
@@ -1092,8 +1369,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyMoveWig", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyMoveWig", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int fromIdx = json.value("fromCategory", -1);
@@ -1125,8 +1402,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyPreviewWig", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyPreviewWig", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 WigEntry entry;
@@ -1145,8 +1422,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyEndPreview", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyEndPreview", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = WigManager::GetSingleton();
             if (mgr.IsPreviewing()) {
                 mgr.EndPreview();
@@ -1156,18 +1433,27 @@ void TailorUI::Initialize()
 
     // --- Wig blacklist listeners ---
 
-    g_MeridianView->RegisterListener(_view, "wiggyRequestBlacklist", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyRequestBlacklist", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendWigBlacklistData();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyBlacklistPlugin", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyBlacklistPlugin", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("plugin", std::string{});
                 if (!name.empty()) {
+                    // Only a plugin the game has loaded: a name with bytes that weren't valid UTF-8 arrives with U+FFFD in
+                    // their place and would match nothing. LookupModByName also finds a plugin that is in Data but not
+                    // active, whose compile index is 0xFF.
+                    auto* data = RE::TESDataHandler::GetSingleton();
+                    const auto* file = data ? data->LookupModByName(name) : nullptr;
+                    if (!file || file->compileIndex == 0xFF) {
+                        logger::warn("wiggyBlacklistPlugin: '{}' is not a plugin the game has loaded; not blacklisted", name);
+                        return;
+                    }
                     auto& ui = TailorUI::GetSingleton();
                     ui.WigBlacklistPlugin(name);
                     ui.SendWigBlacklistData();
@@ -1178,8 +1464,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyUnblacklistPlugin", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyUnblacklistPlugin", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto name = json.value("plugin", std::string{});
@@ -1194,8 +1480,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyClearBlacklist", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyClearBlacklist", [](const char*) {
+        QueueOpenAction([]() {
             auto& ui = TailorUI::GetSingleton();
             ui.ClearWigBlacklist();
             ui.SendWigBlacklistData();
@@ -1204,14 +1490,14 @@ void TailorUI::Initialize()
 
     // --- Hair color listeners ---
 
-    g_MeridianView->RegisterListener(_view, "wiggyOpenHairColor", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyOpenHairColor", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendHairColorState();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyApplyHairColor", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyApplyHairColor", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto r = static_cast<uint8_t>(json.value("r", 0));
@@ -1229,8 +1515,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyConfirmHairColor", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyConfirmHairColor", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto r = static_cast<int16_t>(json.value("r", 0));
@@ -1251,6 +1537,7 @@ void TailorUI::Initialize()
                     mgr.RetintNearbyActors(target);
                     logger::info("Confirmed hair color ({}, {}, {}) for {}",
                         r, g, b, target->GetDisplayFullName());
+                    TailorUI::GetSingleton().SendHairColorState();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("wiggyConfirmHairColor: JSON parse error: {}", e.what());
@@ -1258,8 +1545,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyResetHairColor", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyResetHairColor", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = WigManager::GetSingleton();
             auto* target = mgr.GetTarget();
             if (target) {
@@ -1270,18 +1557,19 @@ void TailorUI::Initialize()
                 mgr.ResetHairColor(target);
                 mgr.RetintNearbyActors(target);
                 logger::info("Reset hair color for {}", target->GetDisplayFullName());
+                TailorUI::GetSingleton().SendHairColorState();
             }
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyCloseHairColor", [](const char*) {
-        // Purely a UI navigation event — JS handles panel switching.
+    RegisterAction("wiggyCloseHairColor", [](const char*) {
+        // Purely a navigation event; the native screen handles panel switching.
     });
 
     // --- Custom color library listeners ---
 
-    g_MeridianView->RegisterListener(_view, "wiggyAddCustomColor", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyAddCustomColor", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto r = static_cast<uint8_t>(json.value("r", 0));
@@ -1301,8 +1589,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyDeleteCustomColor", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyDeleteCustomColor", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 auto r = static_cast<uint8_t>(json.value("r", 0));
@@ -1323,14 +1611,14 @@ void TailorUI::Initialize()
 
     // --- Wig situation listeners ---
 
-    g_MeridianView->RegisterListener(_view, "wiggyRequestWigSituations", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyRequestWigSituations", [](const char*) {
+        QueueOpenAction([]() {
             TailorUI::GetSingleton().SendWigSituationData();
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyConfirmSituationCycle", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyConfirmSituationCycle", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int sit = json.value("situation", 0);
@@ -1338,6 +1626,7 @@ void TailorUI::Initialize()
                     auto& mgr = WigManager::GetSingleton();
                     mgr.ConfirmCycle(static_cast<OutfitSituation>(sit));
                     TailorUI::GetSingleton().SendWigSituationData();
+                    TailorUI::GetSingleton().SendWigTargetUpdate();
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("wiggyConfirmSituationCycle: {}", e.what());
@@ -1345,8 +1634,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyClearWigSituation", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("wiggyClearWigSituation", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 auto json = nlohmann::json::parse(d);
                 int sit = json.value("situation", 0);
@@ -1365,8 +1654,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "wiggyClearAllWigSituations", [](const char*) {
-        SKSE::GetTaskInterface()->AddTask([]() {
+    RegisterAction("wiggyClearAllWigSituations", [](const char*) {
+        QueueOpenAction([]() {
             auto& mgr = WigManager::GetSingleton();
             auto* target = mgr.GetTarget();
             if (target) {
@@ -1381,8 +1670,8 @@ void TailorUI::Initialize()
 
     // --- Live NPC stage geometry ---
 
-    g_MeridianView->RegisterListener(_view, "tailorPreviewViewport", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorPreviewViewport", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 const auto json = nlohmann::json::parse(d);
                 auto& ui = TailorUI::GetSingleton();
@@ -1399,9 +1688,10 @@ void TailorUI::Initialize()
                     json.value("hairMode", false)
                 };
                 auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
+                auto* target = OutfitManager::GetSingleton().GetTarget();
                 if (!WigManager::GetSingleton().SetWigScreen(viewport.hairMode)) {
                     logger::warn("TailorUI: headwear transition could not complete");
-                    TailorUI::GetSingleton().ShowEquipmentWarning(OutfitManager::GetSingleton().GetTarget(),
+                    TailorUI::GetSingleton().ShowEquipmentWarning(target,
                         "Headgear could not be changed. Another equipment rule may be protecting it.");
                 }
                 preview.SetViewport(viewport);
@@ -1411,8 +1701,8 @@ void TailorUI::Initialize()
         });
     });
 
-    g_MeridianView->RegisterListener(_view, "tailorPreviewRotate", [](const char* arg) {
-        SKSE::GetTaskInterface()->AddTask([d = std::string(arg)]() {
+    RegisterAction("tailorPreviewRotate", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
             try {
                 const auto json = nlohmann::json::parse(d);
                 auto& ui = TailorUI::GetSingleton();
@@ -1427,45 +1717,40 @@ void TailorUI::Initialize()
         });
     });
 
+    // The footer's switch between the NPC the session opened on and the player.
+    RegisterAction("tailorSwitchTarget", [](const char*) {
+        QueueOpenAction([]() {
+            TailorUI::GetSingleton().SwitchTarget();
+        });
+    });
+
+    // A Settings switch, saved for every save at once. Disable Tailor Favorite applies now; Hide
+    // Weapons and Hide Helmets at the first situation poll after Tailor closes.
+    RegisterAction("tailorSetSetting", [](const char* data) {
+        std::string name;
+        bool on = false;
+        try {
+            const auto json = nlohmann::json::parse(data ? data : "");
+            name = json.at("name").get<std::string>();
+            on = json.at("on").get<bool>();
+        } catch (const nlohmann::json::exception& e) {
+            logger::warn("tailorSetSetting: {}", e.what());
+            return;
+        }
+        QueueOpenAction([name = std::move(name), on]() {
+            if (!PreferenceStore::GetSingleton().Set(name, on)) return;
+            if (name == "disableFavorite") PowerHandler::ApplyFavorite();
+            TailorUI::GetSingleton().SendSettings();
+        });
+    });
+
     // Load both blacklists from disk
     LoadBlacklist();
     LoadWigBlacklist();
 
-    logger::info("TailorUI: initialized with Meridian UI view");
-}
-
-void TailorUI::ConfigureController()
-{
-    if (!g_MeridianInput) return;
-    using namespace Meridian::UI::Input;
-    if (_controllerShortcut) g_MeridianInput->UnregisterShortcut(_controllerShortcut);
-    _controllerShortcut = 0;
-    const auto& settings = Settings::GetSingleton();
-    ViewInputConfig config{};
-    config.enabled = settings.GetControllerEnabled();
-    config.allowCursor = 1;
-    const auto configured = g_MeridianInput->ConfigureView(_view, &config);
-    if (configured != Result::Ok) {
-        logger::warn("Tailor controller configuration failed: {}", static_cast<unsigned>(configured));
-        return;
-    }
-    if (!config.enabled || !settings.GetControllerShortcutEnabled()) return;
-    const auto button = Tailor::Controller::ParseControl(settings.GetControllerButton());
-    const auto modifier = Tailor::Controller::ParseControl(settings.GetControllerModifier());
-    if (!button || !modifier || !Tailor::Controller::AllowedOpeningChord(*button, *modifier)) {
-        logger::warn("Tailor controller opener disabled: invalid or reserved chord {} + {}",
-            settings.GetControllerModifier(), settings.GetControllerButton());
-        return;
-    }
-    ShortcutInfo shortcut{};
-    shortcut.button = *button;
-    shortcut.modifier = *modifier;
-    // Meridian invokes this on the game thread and guards focus/menu eligibility.
-    shortcut.callback = [](ShortcutHandle, void*) { TailorUI::GetSingleton().Open(); };
-    const auto result = g_MeridianInput->RegisterShortcut(_view, &shortcut, &_controllerShortcut);
-    if (result == Result::Conflict) logger::warn("Tailor controller opener conflicts with another Meridian shortcut; choose a different [Controller] chord in Tailor.ini");
-    else logger::info("Tailor controller opener {} + {}: result {}", settings.GetControllerModifier(),
-        settings.GetControllerButton(), static_cast<unsigned>(result));
+    _initialized = true;
+    Tailor::ImGuiUI::ImGuiHost::GetSingleton().Initialize();
+    logger::info("TailorUI: initialized native ImGui UI with {} actions", _actions.size());
 }
 
 void TailorUI::Toggle()
@@ -1482,27 +1767,39 @@ void TailorUI::Toggle()
 // cannot see _isOpen, so they must be safe to call unconditionally.
 void TailorUI::Open()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) {
-        logger::warn("TailorUI::Open: not initialized");
+    if (!_initialized || IsOpen()) return;
+    // Tailor never handles children: with one under the crosshair it doesn't open, rather than open on the player.
+    if (Tailor::Children::CrosshairIsChild()) {
+        RE::SendHUDMessage::ShowHUDMessage(Tailor::Children::kRefusalMessage);
+        logger::info("TailorUI: not opening on a child");
         return;
     }
-    if (_isOpen) {
-        return;
-    }
+    (void)Tailor::ImGuiUI::ImGuiHost::GetSingleton().RequestOpen();
+}
 
-    // Block if another Meridian view is already focused (e.g. Horde)
-    if (g_MeridianView->HasAnyFocus() && !g_MeridianView->HasFocus(_view)) {
-        return;
-    }
-
+// Native menu creation has succeeded; the host dispatches this on the game thread.
+void TailorUI::OnNativeMenuShown()
+{
+    if (IsOpen()) return;
+    if (!Tailor::ImGuiUI::ImGuiHost::GetSingleton().HasFocus()) return;
     logger::info("TailorUI: opening menu");
 
     auto& outfitMgr = OutfitManager::GetSingleton();
+    // The crosshair moved to a child since Open: close instead of opening on the player.
+    if (Tailor::Children::CrosshairIsChild()) {
+        RE::SendHUDMessage::ShowHUDMessage(Tailor::Children::kRefusalMessage);
+        logger::info("TailorUI: closing; a child is under the crosshair");
+        Tailor::ImGuiUI::ImGuiHost::GetSingleton().RequestClose();
+        return;
+    }
     outfitMgr.UpdateTargetFromCrosshair();
+    // No NPC under the crosshair: Tailor opens on the player.
+    if (!outfitMgr.GetTarget()) outfitMgr.TargetPlayer();
 
     auto* target = outfitMgr.GetTarget();
     if (!WigManager::GetSingleton().SetTarget(target)) {
         logger::warn("TailorUI: previous headgear restoration must finish before changing target");
+        Tailor::ImGuiUI::ImGuiHost::GetSingleton().RequestClose();
         return;
     }
 
@@ -1510,24 +1807,8 @@ void TailorUI::Open()
     SendCategories();
     SendWigTargetUpdate();
     SendWigCategories();
-
-    // Cancel any deferred Hide() from a previous Close() — the dock is back.
-    ++_hideGeneration;
-
-    g_MeridianView->Show(_view);
-    // The live preview session owns the target's hold. The world stays unpaused
-    // so outfit/morph updates and idle animations continue normally.
-    const auto focusResult = g_MeridianView->TryFocus(
-        _view, Meridian::UI::View::FocusMode::Unpaused);
-    if (focusResult != Meridian::UI::View::FocusResult::Granted &&
-        focusResult != Meridian::UI::View::FocusResult::AlreadyFocused) {
-        g_MeridianView->Hide(_view);
-        if (focusResult != Meridian::UI::View::FocusResult::Busy) {
-            logger::warn("TailorUI: Meridian focus request failed ({})",
-                         static_cast<std::uint32_t>(focusResult));
-        }
-        return;
-    }
+    SendSettings();
+    SendLibraryState();
 
     _isOpen = true;
     if (auto* calendar = RE::Calendar::GetSingleton(); calendar && calendar->timeScale) {
@@ -1542,12 +1823,10 @@ void TailorUI::Open()
         CloseForLifecycle(Tailor::Preview::EndReason::SetupFailed);
         return;
     }
-    _gameMenus.Hide(RE::UI::GetSingleton());
     if (target) Tailor::Preview::TailorPreviewSession::GetSingleton().Begin(target->GetHandle());
     const auto previewOpenGeneration = ++_previewOpenGeneration;
-    g_MeridianView->ExecuteJavaScript(_view, std::format(
-        "tailorSetPreviewOpenGeneration({})", previewOpenGeneration).c_str());
-    g_MeridianView->ExecuteJavaScript(_view, "tailorShowPanel()");
+    Publish("tailorSetPreviewOpenGeneration", previewOpenGeneration);
+    Publish("tailorShowPanel");
     SendPreviewState();
 }
 
@@ -1560,7 +1839,8 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
 {
     const bool wasOpen = _isOpen.exchange(false);
     ++_previewOpenGeneration;
-    // Restore even on repeated/lifecycle cleanup and without a Meridian view.
+    Tailor::ImGuiUI::ImGuiHost::GetSingleton().RequestClose();
+    // Restore even on repeated or interrupted lifecycle cleanup.
     if (_originalTimeScale.has_value()) {
         const float originalTimeScale = *_originalTimeScale;
         _originalTimeScale.reset();
@@ -1569,7 +1849,6 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
             logger::info("TailorUI: restored timescale {}", originalTimeScale);
         }
     }
-    _gameMenus.Restore(RE::UI::GetSingleton());
     // Also retry a pending exact-copy restoration on repeated close calls.
     WigManager::GetSingleton().SetWigScreen(false);
     if (!wasOpen) {
@@ -1579,13 +1858,37 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
 
     logger::info("TailorUI: closing menu");
 
-    // Cancel outfit cycling or create-outfit preview
+    CancelTargetWork(reason);
+
+    Tailor::Preview::TailorPreviewSession::GetSingleton().End(reason);
+
+
+    RestorePlayerRunMode();
+}
+
+bool TailorUI::IsOpen() const
+{
+    return _isOpen;
+}
+
+bool TailorUI::HasFocus() const
+{
+    return _isOpen && Tailor::ImGuiUI::ImGuiHost::GetSingleton().HasFocus();
+}
+
+void TailorUI::CancelTargetWork(Tailor::Preview::EndReason reason)
+{
     auto& outfitMgr = OutfitManager::GetSingleton();
+    const bool worldReverting = reason == Tailor::Preview::EndReason::PreLoadGame ||
+        reason == Tailor::Preview::EndReason::NewGame;
+    // The load replaces the player's inventory: forget a player preview instead of undoing it.
+    if (worldReverting) Tailor::Player::PlayerWardrobe::GetSingleton().DropPreview();
+
+    // Cancel outfit cycling or create-outfit preview
     outfitMgr.CancelCycle();
     // PrepareForGameLoad restores captured pointers without equipment/morph
     // work when the world is about to be reverted.
-    if (reason != Tailor::Preview::EndReason::PreLoadGame &&
-        reason != Tailor::Preview::EndReason::NewGame) {
+    if (!worldReverting) {
         outfitMgr.EndCreateOutfit();
     }
 
@@ -1598,68 +1901,77 @@ void TailorUI::CloseForLifecycle(Tailor::Preview::EndReason reason)
     if (wigMgr.IsCycling()) {
         wigMgr.CancelCycle();
     }
+}
 
-    Tailor::Preview::TailorPreviewSession::GetSingleton().End(reason);
-
-    if (g_MeridianView && _view != Meridian::UI::View::INVALID_VIEW_HANDLE) {
-        g_MeridianView->Unfocus(_view);
-
-        // Let the dock play its 280ms slide-out before hiding the view. Unfocus
-        // (above) releases input immediately so the player can move during the
-        // animation; Hide is deferred past the transition. A reopen bumps
-        // _hideGeneration, which makes the pending Hide a no-op — the view stays
-        // visible and the JS dock reverses into its slide-in.
-        g_MeridianView->ExecuteJavaScript(_view, "tailorHidePanel()");
-        const auto generation = _hideGeneration.load();
-        std::thread([this, generation]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(320));
-            auto view = _view;
-            SKSE::GetTaskInterface()->AddTask([this, view, generation]() {
-                if (generation != _hideGeneration.load()) return;  // reopened meanwhile
-                if (g_MeridianView) g_MeridianView->Hide(view);
-                // The deferred Hide lands after its own menu-teardown pass, whose
-                // run-state re-derive can land after the Close()-anchored restore
-                // writes. Re-anchor the restore brackets to this teardown too.
-                RestorePlayerRunMode();
-            });
-        }).detach();
+void TailorUI::SwitchTarget()
+{
+    auto& outfitMgr = OutfitManager::GetSingleton();
+    auto& wigMgr = WigManager::GetSingleton();
+    auto* current = outfitMgr.GetTarget();
+    if (!IsOpen() || !current) return;
+    // Everything in progress on the current target ends first, exactly as on Close.
+    CancelTargetWork(Tailor::Preview::EndReason::TargetSwitched);
+    if (!wigMgr.SetWigScreen(false)) {
+        ShowEquipmentWarning(current, "Headgear could not be changed. Another equipment rule may be protecting it.");
+        return;
     }
-
-    RestorePlayerRunMode();
-}
-
-bool TailorUI::IsOpen() const
-{
-    return _isOpen;
-}
-
-bool TailorUI::HasFocus() const
-{
-    return _isOpen && g_MeridianView &&
-           _view != Meridian::UI::View::INVALID_VIEW_HANDLE &&
-           g_MeridianView->HasFocus(_view);
+    // Headgear Tailor took off the other one and still has to put back goes back on first. If it can't, nothing moves:
+    // the outfit side, the wig side and the preview all stay on this target.
+    // Only someone the switch can reach: GetSessionNpc checks the NPC as TargetSessionNpc does, and the player is
+    // checked as TargetPlayer does, so a player who can't be dressed (beast form, for one) has nothing put back.
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* destination = current->IsPlayerRef() ? outfitMgr.GetSessionNpc() : (Tailor::Player::CanDress(player) ? player : nullptr);
+    if (destination && !wigMgr.RestorePendingHeadwear(destination)) {
+        logger::warn("TailorUI: could not switch the target; its headgear could not be put back");
+        SendTargetUpdate();
+        ShowEquipmentWarning(current, "Couldn't switch: headgear could not be put back. Another equipment rule may be protecting it.");
+        return;
+    }
+    const auto before = outfitMgr.SaveTarget();
+    const bool switched = current->IsPlayerRef() ? outfitMgr.TargetSessionNpc() : outfitMgr.TargetPlayer();
+    auto* target = outfitMgr.GetTarget();
+    if (!switched || !target || !wigMgr.SetTarget(target)) {
+        logger::warn("TailorUI: could not switch the target");
+        // The outfit side goes back exactly as it was, without TargetPlayer's checks, to the target the wig side and
+        // the preview still have; then the screen is told, and the toast shows on that target.
+        outfitMgr.RestoreTarget(before);
+        SendTargetUpdate();
+        ShowEquipmentWarning(current, "Couldn't switch the target.");
+        return;
+    }
+    auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
+    preview.End(Tailor::Preview::EndReason::TargetSwitched);
+    preview.Begin(target->GetHandle());
+    // A new open generation drops actions aimed at the old target, and the screen
+    // starts over: its opening page, a fresh viewport report and orbit.
+    const auto generation = ++_previewOpenGeneration;
+    Publish("tailorSetPreviewOpenGeneration", generation);
+    SendTargetUpdate();
+    SendCategories();
+    SendWigTargetUpdate();
+    SendWigCategories();
+    Publish("tailorShowPanel");
+    SendPreviewState();
+    logger::info("TailorUI: switched the target to {}", target->GetDisplayFullName());
 }
 
 void TailorUI::SendPreviewState()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
     auto& preview = Tailor::Preview::TailorPreviewSession::GetSingleton();
     nlohmann::json state{
         {"active", preview.IsReady()},
         {"message", preview.StatusMessage()},
         {"generation", preview.Generation()}
     };
-    g_MeridianView->ExecuteJavaScript(
-        _view, std::format("tailorSetPreviewState({})", state.dump()).c_str());
+    Publish("tailorSetPreviewState", state);
 }
 
 // ================================================================
-// OUTFIT C++ -> JS helpers
+// OUTFIT native state publishers
 // ================================================================
 
 void TailorUI::SendTargetUpdate()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = OutfitManager::GetSingleton();
 
@@ -1670,12 +1982,20 @@ void TailorUI::SendTargetUpdate()
     // Resolve current outfit name for the target
     std::string currentOutfit;
     auto* target = mgr.GetTarget();
-    if (target) {
+    const bool player = target && target->IsPlayerRef();
+    if (player) {
+        // The player wears what the wardrobe put on; none means Own Gear.
+        const int worn = Tailor::Player::PlayerWardrobe::GetSingleton().WornOutfitId();
+        if (const auto* outfit = worn > 0 ? OutfitStore::GetSingleton().GetOutfitById(worn) : nullptr) currentOutfit = outfit->name;
+    } else if (target) {
         auto* assignment = OutfitAssignments::GetSingleton().GetAssignment(target->GetFormID());
         if (assignment) {
-            // Check situational outfit first, then Adventuring and generic fallbacks.
+            // A water exit can restore the previous selection even after the
+            // location/day changed. Show the actual applied outfit when known.
             auto situation = SituationHandler::GetSingleton()->EvaluateSituation(target);
-            const int outfitId = SituationHandler::GetSingleton()->ResolveOutfitForSituation(target->GetFormID(), situation);
+            auto applied = assignment->HasAnySituation()
+                ? SituationHandler::GetSingleton()->GetAppliedOutfitId(target->GetFormID()) : std::nullopt;
+            const int outfitId = applied ? *applied : SituationHandler::GetSingleton()->ResolveOutfitForSituation(target->GetFormID(), situation);
             if (outfitId > 0) {
                 auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
                 if (outfit) currentOutfit = outfit->name;
@@ -1683,17 +2003,30 @@ void TailorUI::SendTargetUpdate()
         }
     }
     data["currentOutfit"] = currentOutfit;
+    data["isPlayer"] = player;
+    // The footer's switch button: from an NPC to the player, or back to the session's NPC.
+    auto* pc = RE::PlayerCharacter::GetSingleton();
+    std::string switchTo;
+    if (player) {
+        if (auto* npc = mgr.GetSessionNpc()) switchTo = SanitizeUtf8(npc->GetDisplayFullName());
+    } else if (target && Tailor::Player::CanDress(pc)) {
+        switchTo = "Player";
+    }
+    data["switchTo"] = switchTo;
+    if (!target && Tailor::Player::InBeastForm(pc)) {
+        data["notice"] = "Tailor can't dress you in this form.\nLook at an NPC, then reopen this menu.";
+    }
 
-    std::string js = std::format("tailorSetTarget({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetTarget", data);
 }
 
 void TailorUI::SendCategories()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& lib = OutfitLibrary::GetSingleton();
     auto categories = lib.GetCategories();
+    // What the target can wear; with no target, every saved outfit counts.
+    const auto wearable = OutfitManager::WearableBy(OutfitManager::GetSingleton().GetTarget());
 
     nlohmann::json arr = nlohmann::json::array();
     for (auto& cat : categories) {
@@ -1704,17 +2037,16 @@ void TailorUI::SendCategories()
             {"situationType", cat.situationType},
             {"armorType", OutfitArmorTypeName(cat.armorType)},
             {"outfitCount", static_cast<int>(cat.outfitIds.size())},
+            {"fitCount", static_cast<int>(std::ranges::count_if(cat.outfitIds, wearable))},
             {"isDefault", cat.isDefault}
         });
     }
 
-    std::string js = std::format("tailorSetCategories({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetCategories", arr);
 }
 
 void TailorUI::SendCycleState()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = OutfitManager::GetSingleton();
     auto* state = mgr.GetCycleState();
@@ -1732,7 +2064,7 @@ void TailorUI::SendCycleState()
         ? store.GetOutfitById(state->outfitIds[state->index]) : nullptr;
     data["armorRating"] = currentOutfit ? CalcOutfitArmorRating(*currentOutfit) : 0;
 
-    // Include full item list so JS can populate the search dropdown
+    // Include the full item list for the native search dropdown
     nlohmann::json items = nlohmann::json::array();
     for (int i = 0; i < static_cast<int>(state->outfitIds.size()); i++) {
         auto* outfit = store.GetOutfitById(state->outfitIds[i]);
@@ -1769,34 +2101,35 @@ void TailorUI::SendCycleState()
     }
     data["items"] = items;
 
-    std::string js = std::format("tailorSetCycleState({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetCycleState", data);
 }
 
 void TailorUI::SendTransferData()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
     nlohmann::json data;
     try {
         data = {{"outfits", OutfitTransfer::Catalog()}, {"files", OutfitTransfer::ListFiles()}};
     } catch (const std::exception& error) {
         data = {{"outfits", nlohmann::json::array()}, {"files", nlohmann::json::array()}, {"error", error.what()}};
     }
-    const auto js = std::format("tailorSetTransferData({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetTransferData", data);
 }
 
 void TailorUI::ShowEquipmentWarning(RE::Actor* actor, std::string_view message)
 {
     if (!IsOpen() || actor != OutfitManager::GetSingleton().GetTarget() ||
-        !g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
+        !IsOpen()) return;
     const nlohmann::json text = message;
-    g_MeridianView->ExecuteJavaScript(_view, std::format("toast({}, 'danger')", text.dump()).c_str());
+    Publish("toast", {{"message", text}, {"kind", "danger"}});
+}
+
+void TailorUI::ShowLibraryProblem(std::string_view message)
+{
+    Publish("toast", {{"message", std::string(message)}, {"kind", "danger"}});
 }
 
 void TailorUI::SendOutfits()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& store = OutfitStore::GetSingleton();
     auto& outfits = store.GetOutfits();
@@ -1826,6 +2159,7 @@ void TailorUI::SendOutfits()
         arr.push_back({
             {"id", outfit.id},
             {"name", outfit.name},
+            {"sex", static_cast<int>(outfit.sex)},
             {"itemCount", static_cast<int>(outfit.items.size())},
             {"armorRating", CalcOutfitArmorRating(outfit)},
             {"categories", catNames},
@@ -1834,13 +2168,11 @@ void TailorUI::SendOutfits()
         });
     }
 
-    std::string js = std::format("tailorSetOutfits({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetOutfits", arr);
 }
 
 void TailorUI::SendCategoryOutfits(int categoryId)
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto* cat = OutfitLibrary::GetSingleton().GetCategoryById(categoryId);
     auto& store = OutfitStore::GetSingleton();
@@ -1863,13 +2195,11 @@ void TailorUI::SendCategoryOutfits(int categoryId)
         }
     }
 
-    std::string js = std::format("tailorSetCategoryOutfits({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetCategoryOutfits", data);
 }
 
 void TailorUI::SendArmorPlugins()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto plugins = OutfitStore::GetSingleton().GetArmorPluginNames();
 
@@ -1879,13 +2209,11 @@ void TailorUI::SendArmorPlugins()
         arr.push_back(name);
     }
 
-    std::string js = std::format("tailorSetArmorPlugins({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetArmorPlugins", arr);
 }
 
 void TailorUI::SendArmorForPlugin(const std::string& plugin)
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto armors = OutfitStore::GetSingleton().GetArmorForPlugin(plugin);
 
@@ -1917,13 +2245,11 @@ void TailorUI::SendArmorForPlugin(const std::string& plugin)
     data["plugin"] = plugin;
     data["armors"] = arr;
 
-    std::string js = std::format("tailorSetArmorForPlugin({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetArmorForPlugin", data);
 }
 
 void TailorUI::SendOutfitData(int outfitId)
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
     if (!outfit) return;
@@ -1942,6 +2268,7 @@ void TailorUI::SendOutfitData(int outfitId)
     nlohmann::json data;
     data["outfitId"] = outfit->id;
     data["name"] = outfit->name;
+    data["sex"] = static_cast<int>(outfit->sex);
     data["armorRating"] = CalcOutfitArmorRating(*outfit);
     data["categoryIds"] = categoryIds;
     data["categoryId"] = categoryIds.empty() ? 0 : categoryIds.front();  // Older views.
@@ -1963,19 +2290,18 @@ void TailorUI::SendOutfitData(int outfitId)
             {"plugin", item.plugin},
             {"name", item.name},
             {"type", armorType},
+            {"slot", GetArmorSlotName(armor)},
             {"armorRating", enchData["armorRating"]},
             {"enchanted", enchData["enchanted"]},
             {"enchantments", enchData["enchantments"]}
         });
     }
 
-    std::string js = std::format("tailorSetOutfitData({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetOutfitData", data);
 }
 
 void TailorUI::SendAllCategories()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& lib = OutfitLibrary::GetSingleton();
     auto& allCats = lib.GetCategories();
@@ -1995,7 +2321,7 @@ void TailorUI::SendAllCategories()
         });
     }
     for (const auto& [name, type] : std::vector<std::pair<std::string, std::string>>{
-            {"Adventuring", "adventuring"}, {"Town", "town"}, {"Home", "home"}, {"Sleep", "sleep"}}) {
+            {"Adventuring", "adventuring"}, {"Town", "town"}, {"Home", "home"}, {"Sleep", "sleep"}, {"Swimming", "swimming"}, {"Warm", "warm"}}) {
         poolArr.push_back({{"name", name}, {"situationType", type},
             {"outfitCount", static_cast<int>(lib.GetSituationOutfitIds(type).size())}});
     }
@@ -2005,13 +2331,11 @@ void TailorUI::SendAllCategories()
     data["situationPools"] = poolArr;
     data["customCount"] = catArr.size();
 
-    std::string js = std::format("tailorSetAllCategories({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetAllCategories", data);
 }
 
 void TailorUI::SendSituationData()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = OutfitManager::GetSingleton();
     auto* target = mgr.GetTarget();
@@ -2063,28 +2387,40 @@ void TailorUI::SendSituationData()
     data["sleepName"] = getOutfitName(sa ? sa->sleepId : 0);
     data["sleepAR"] = getOutfitAR(sa ? sa->sleepId : 0);
     data["sleepEnch"] = getOutfitEnch(sa ? sa->sleepId : 0);
+    data["swimmingId"] = sa ? sa->swimmingId : 0;
+    data["swimmingName"] = getOutfitName(sa ? sa->swimmingId : 0);
+    data["swimmingAR"] = getOutfitAR(sa ? sa->swimmingId : 0);
+    data["swimmingEnch"] = getOutfitEnch(sa ? sa->swimmingId : 0);
+    data["warmId"] = sa ? sa->warmId : 0;
+    data["warmName"] = getOutfitName(sa ? sa->warmId : 0);
+    data["warmAR"] = getOutfitAR(sa ? sa->warmId : 0);
+    data["warmEnch"] = getOutfitEnch(sa ? sa->warmId : 0);
 
     // Randomize flags
     data["adventuringRandom"] = sa ? sa->adventuringRandom : false;
     data["townRandom"] = sa ? sa->townRandom : false;
     data["homeRandom"] = sa ? sa->homeRandom : false;
     data["sleepRandom"] = sa ? sa->sleepRandom : false;
+    data["swimmingRandom"] = sa ? sa->swimmingRandom : false;
+    data["warmRandom"] = sa ? sa->warmRandom : false;
 
-    // Situation category outfit counts (for "Random from pool (X outfits)" display)
+    // Situation category outfit counts (for "Random from pool (X outfits)" display),
+    // counting only what the target can wear.
     auto& lib = OutfitLibrary::GetSingleton();
+    const auto wearable = OutfitManager::WearableBy(target);
     auto getCatCount = [&](const std::string& sitType) -> int {
-        return static_cast<int>(lib.GetSituationOutfitIds(sitType).size());
+        return static_cast<int>(std::ranges::count_if(lib.GetSituationOutfitIds(sitType), wearable));
     };
     const auto armorType = sa ? sa->adventuringArmorType : OutfitArmorType::Any;
     data["adventuringArmorType"] = OutfitArmorTypeName(armorType);
     auto matchingCount = [&](const std::vector<int>& ids) {
-        auto matching = lib.FilterByArmorType(ids, armorType);
-        std::erase_if(matching, [&](int id) { return !store.GetOutfitById(id); });
-        return matching.size();
+        return lib.FilterAdventuringEligible(ids, armorType, wearable).size();
     };
     data["adventuringCatCount"] = matchingCount(lib.GetSituationOutfitIds("adventuring"));
     data["adventuringAssignedCompatible"] = !sa || sa->adventuringId <= 0 ||
-        (store.GetOutfitById(sa->adventuringId) && lib.MatchesArmorType(sa->adventuringId, armorType));
+        lib.IsAdventuringEligible(sa->adventuringId, armorType, wearable);
+    // Nothing is in both Adventuring and the chosen type, so all of Adventuring is in use.
+    data["adventuringTypeFallback"] = armorType != OutfitArmorType::Any && !lib.HasAdventuringOutfitsOfType(armorType, wearable);
     data["adventuringCategoryCounts"] = nlohmann::json::object();
     bool hasDressOptions = false;
     for (const auto& category : lib.GetCategories()) {
@@ -2096,14 +2432,21 @@ void TailorUI::SendSituationData()
     data["townCatCount"] = getCatCount("town");
     data["homeCatCount"] = getCatCount("home");
     data["sleepCatCount"] = getCatCount("sleep");
+    data["swimmingCatCount"] = getCatCount("swimming");
+    data["warmCatCount"] = getCatCount("warm");
+    // A fixed outfit tagged for the other sex is skipped in game; its card warns.
+    for (const auto& [key, id] : std::initializer_list<std::pair<const char*, int>>{
+             {"adventuring", sa ? sa->adventuringId : 0}, {"town", sa ? sa->townId : 0},
+             {"home", sa ? sa->homeId : 0}, {"sleep", sa ? sa->sleepId : 0}, {"swimming", sa ? sa->swimmingId : 0},
+             {"warm", sa ? sa->warmId : 0}}) {
+        data[std::string(key) + "Fits"] = id <= 0 || !store.GetOutfitById(id) || wearable(id);
+    }
 
-    std::string js = std::format("tailorSetSituationData({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetSituationData", data);
 }
 
 void TailorUI::SendOutfitUsage(int outfitId)
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto actorIds = OutfitAssignments::GetSingleton().GetActorsUsingOutfit(outfitId);
 
@@ -2117,17 +2460,15 @@ void TailorUI::SendOutfitUsage(int outfitId)
         data["actors"].push_back({{"name", name}, {"formId", id}});
     }
 
-    std::string js = std::format("tailorSetOutfitUsage({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetOutfitUsage", data);
 }
 
 // ================================================================
-// WIG C++ -> JS helpers
+// WIG native state publishers
 // ================================================================
 
 void TailorUI::SendWigTargetUpdate()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& outfitMgr = OutfitManager::GetSingleton();
     auto* target = outfitMgr.GetTarget();
@@ -2154,16 +2495,15 @@ void TailorUI::SendWigTargetUpdate()
             data["hairColorG"] = static_cast<int>(state->hairColorG);
             data["hairColorB"] = static_cast<int>(state->hairColorB);
         }
-        data["isNFFManaged"] = WigManager::GetSingleton().IsNFFManaged(target);
+        // NFF manages followers, never the player.
+        data["isNFFManaged"] = !target->IsPlayerRef() && WigManager::GetSingleton().IsNFFManaged(target);
     }
 
-    std::string js = std::format("wiggySetTarget({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetTarget", data);
 }
 
 void TailorUI::SendWigCategories()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& library = WigLibrary::GetSingleton();
 
@@ -2189,13 +2529,11 @@ void TailorUI::SendWigCategories()
         });
     }
 
-    std::string js = std::format("wiggySetCategories({})", categories.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetCategories", categories);
 }
 
 void TailorUI::SendWigCycleState()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = WigManager::GetSingleton();
     auto wig = mgr.GetCurrentCycleWig();
@@ -2220,13 +2558,16 @@ void TailorUI::SendWigCycleState()
         state["items"] = nlohmann::json::array();
     }
 
-    std::string js = std::format("wiggySetCycleState({})", state.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetCycleState", state);
+}
+
+void TailorUI::SendDefaultHairResult(bool success)
+{
+    Publish("wiggyDefaultHairResult", success);
 }
 
 void TailorUI::SendModWigs()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = WigManager::GetSingleton();
     auto mods = mgr.ScanAllModWigs();
@@ -2249,13 +2590,11 @@ void TailorUI::SendModWigs()
         });
     }
 
-    std::string js = std::format("wiggySetModWigs({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetModWigs", arr);
 }
 
 void TailorUI::SendWigBlacklistData()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = WigManager::GetSingleton();
     auto mods = mgr.ScanAllModWigs();
@@ -2269,13 +2608,11 @@ void TailorUI::SendWigBlacklistData()
         });
     }
 
-    std::string js = std::format("wiggySetBlacklistData({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetBlacklistData", arr);
 }
 
 void TailorUI::SendHairColorState()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto* target = OutfitManager::GetSingleton().GetTarget();
 
@@ -2308,13 +2645,11 @@ void TailorUI::SendHairColorState()
     }
     data["customColors"] = arr;
 
-    std::string hairJs = std::format("wiggySetHairColor({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, hairJs.c_str());
+    Publish("wiggySetHairColor", data);
 }
 
 void TailorUI::SendWigSituationData()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto& mgr = WigManager::GetSingleton();
     auto* target = mgr.GetTarget();
@@ -2329,8 +2664,30 @@ void TailorUI::SendWigSituationData()
     data["homeName"]        = (sa && sa->home.formId != 0) ? sa->home.name : "";
     data["sleepName"]       = (sa && sa->sleep.formId != 0) ? sa->sleep.name : "";
 
-    std::string js = std::format("wiggySetWigSituationData({})", data.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("wiggySetWigSituationData", data);
+}
+
+void TailorUI::SendSettings()
+{
+    const auto preferences = PreferenceStore::GetSingleton().Get();
+    Publish("tailorSetSettings", {{"disableFavorite", preferences.disableFavorite},
+        {"hideWeapons", preferences.hideWeapons}, {"hideHelmets", preferences.hideHelmets}});
+}
+
+// While outfits.json or library.json has saves off (a file Tailor couldn't fully read at startup), the screen
+// disables Create Outfit, Save, Delete, Set Sex, Copy, Import and the Categories page's Create, Save Name and Delete
+// Category, and Manage Outfits says why. Published at every open as a value,
+// since a toast sent while the menu opens is swallowed by the screen's reset.
+void TailorUI::SendLibraryState()
+{
+    const bool outfits = OutfitStore::GetSingleton().SaveAllowed();
+    const bool library = OutfitLibrary::GetSingleton().SaveAllowed();
+    std::string note;
+    if (!outfits || !library) {
+        note = std::format("Read-only: Tailor couldn't fully read {}. See Tailor.log, fix it and restart.",
+            !outfits && !library ? "outfits.json and library.json" : !outfits ? "outfits.json" : "library.json");
+    }
+    Publish("tailorSetLibraryState", {{"readOnly", !outfits || !library}, {"note", note}});
 }
 
 // ================================================================
@@ -2346,32 +2703,53 @@ std::filesystem::path TailorUI::GetBlacklistPath() const
 
 void TailorUI::LoadBlacklist()
 {
-    _blacklist.clear();
-
-    auto path = GetBlacklistPath();
-    if (!std::filesystem::exists(path)) {
-        logger::info("TailorUI: no outfit blacklist.json found, starting empty");
-        return;
-    }
-
+    // Saves stay off until this load has read the whole file: a file Tailor couldn't read is never written over.
+    _blacklistSaveAllowed = false;
     try {
-        std::ifstream file(path);
-        auto json = nlohmann::json::parse(file);
-
-        if (json.contains("plugins") && json["plugins"].is_array()) {
-            for (auto& name : json["plugins"]) {
-                _blacklist.insert(name.get<std::string>());
-            }
+        const auto path = GetBlacklistPath();
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) {
+            // A file Tailor can't check is not a missing file: saves stay off.
+            if (error) throw std::filesystem::filesystem_error("could not check blacklist.json", path, error);
+            _blacklist.clear();
+            _blacklistSaveAllowed = true;
+            logger::info("TailorUI: no outfit blacklist.json found, starting empty");
+            return;
         }
 
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        if (!json.is_object() || (json.contains("version") && json["version"] != 1) ||
+            !json.contains("plugins") || !json["plugins"].is_array()) {
+            throw std::runtime_error("unsupported blacklist document");
+        }
+        std::set<std::string> parsed;
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& name : json["plugins"]) {
+            ++row;
+            if (name.is_string()) {
+                parsed.insert(name.get<std::string>());
+            } else {
+                complete = false;
+                logger::error("TailorUI: outfit blacklist row {} is not a plugin name; the other rows stay, blacklist.json is kept as it is and saves are off", row);
+            }
+        }
+        _blacklist = std::move(parsed);
+        _blacklistSaveAllowed = complete;
         logger::info("TailorUI: loaded {} outfit-blacklisted plugin(s)", _blacklist.size());
     } catch (const std::exception& e) {
-        logger::error("TailorUI: failed to load outfit blacklist: {}", e.what());
+        logger::error("TailorUI: failed to load the outfit blacklist; blacklist.json is kept as it is and saves are off: {}", e.what());
     }
 }
 
 void TailorUI::SaveBlacklist() const
 {
+    if (!_blacklistSaveAllowed) {
+        logger::error("TailorUI: outfit blacklist save skipped because blacklist.json was not loaded completely");
+        return;
+    }
+
     nlohmann::json json;
     json["version"] = 1;
     json["plugins"] = nlohmann::json::array();
@@ -2380,14 +2758,13 @@ void TailorUI::SaveBlacklist() const
     }
 
     try {
-        auto path = GetBlacklistPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("TailorUI: failed to open outfit blacklist.json for writing");
+        const auto path = GetBlacklistPath();
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("TailorUI: failed to save outfit blacklist.json: {}", error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("TailorUI: saved {} outfit-blacklisted plugin(s)", _blacklist.size());
     } catch (const std::exception& e) {
         logger::error("TailorUI: failed to save outfit blacklist: {}", e.what());
@@ -2419,7 +2796,6 @@ bool TailorUI::IsBlacklisted(const std::string& pluginName) const
 
 void TailorUI::SendBlacklistData()
 {
-    if (!g_MeridianView || _view == Meridian::UI::View::INVALID_VIEW_HANDLE) return;
 
     auto plugins = OutfitStore::GetSingleton().GetArmorPluginNames();
 
@@ -2431,8 +2807,7 @@ void TailorUI::SendBlacklistData()
         });
     }
 
-    std::string js = std::format("tailorSetBlacklistData({})", arr.dump());
-    g_MeridianView->ExecuteJavaScript(_view, js.c_str());
+    Publish("tailorSetBlacklistData", arr);
 }
 
 // ================================================================
@@ -2448,32 +2823,53 @@ std::filesystem::path TailorUI::GetWigBlacklistPath() const
 
 void TailorUI::LoadWigBlacklist()
 {
-    _wigBlacklist.clear();
-
-    auto path = GetWigBlacklistPath();
-    if (!std::filesystem::exists(path)) {
-        logger::info("TailorUI: no wig blacklist.json found, starting empty");
-        return;
-    }
-
+    // Saves stay off until this load has read the whole file: a file Tailor couldn't read is never written over.
+    _wigBlacklistSaveAllowed = false;
     try {
-        std::ifstream file(path);
-        auto json = nlohmann::json::parse(file);
-
-        if (json.contains("plugins") && json["plugins"].is_array()) {
-            for (auto& name : json["plugins"]) {
-                _wigBlacklist.insert(name.get<std::string>());
-            }
+        const auto path = GetWigBlacklistPath();
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) {
+            // A file Tailor can't check is not a missing file: saves stay off.
+            if (error) throw std::filesystem::filesystem_error("could not check the wig blacklist.json", path, error);
+            _wigBlacklist.clear();
+            _wigBlacklistSaveAllowed = true;
+            logger::info("TailorUI: no wig blacklist.json found, starting empty");
+            return;
         }
 
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        if (!json.is_object() || (json.contains("version") && json["version"] != 1) ||
+            !json.contains("plugins") || !json["plugins"].is_array()) {
+            throw std::runtime_error("unsupported blacklist document");
+        }
+        std::set<std::string> parsed;
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& name : json["plugins"]) {
+            ++row;
+            if (name.is_string()) {
+                parsed.insert(name.get<std::string>());
+            } else {
+                complete = false;
+                logger::error("TailorUI: wig blacklist row {} is not a plugin name; the other rows stay, blacklist.json is kept as it is and saves are off", row);
+            }
+        }
+        _wigBlacklist = std::move(parsed);
+        _wigBlacklistSaveAllowed = complete;
         logger::info("TailorUI: loaded {} wig-blacklisted plugin(s)", _wigBlacklist.size());
     } catch (const std::exception& e) {
-        logger::error("TailorUI: failed to load wig blacklist: {}", e.what());
+        logger::error("TailorUI: failed to load the wig blacklist; blacklist.json is kept as it is and saves are off: {}", e.what());
     }
 }
 
 void TailorUI::SaveWigBlacklist() const
 {
+    if (!_wigBlacklistSaveAllowed) {
+        logger::error("TailorUI: wig blacklist save skipped because blacklist.json was not loaded completely");
+        return;
+    }
+
     nlohmann::json json;
     json["version"] = 1;
     json["plugins"] = nlohmann::json::array();
@@ -2482,14 +2878,13 @@ void TailorUI::SaveWigBlacklist() const
     }
 
     try {
-        auto path = GetWigBlacklistPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("TailorUI: failed to open wig blacklist.json for writing");
+        const auto path = GetWigBlacklistPath();
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("TailorUI: failed to save wig blacklist.json: {}", error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("TailorUI: saved {} wig-blacklisted plugin(s)", _wigBlacklist.size());
     } catch (const std::exception& e) {
         logger::error("TailorUI: failed to save wig blacklist: {}", e.what());

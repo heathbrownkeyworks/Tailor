@@ -61,10 +61,17 @@ public:
     // Wig operations
     bool EquipWig(RE::Actor* actor, const WigEntry& wig);
     bool ResetWig(RE::Actor* actor);
+    // Sleep is over and no other wig is due: the worn wig comes off for the actor's own hair, which
+    // keeps its color. Unlike Default Hair, nothing else is cleared.
+    bool TakeOffSituationWig(RE::Actor* actor);
+    // Explicit user action; internal preview cancellation keeps using ResetWig.
+    bool ResetToDefaultHair(RE::Actor* actor);
     bool SetWigScreen(bool enabled);
     bool IsWigScreen(RE::Actor* actor) const;
     bool PrepareForOutfitChange(RE::Actor* actor, const std::vector<RE::TESForm*>& items);
     void ClearHeadwearForGameLoad();
+    bool HasPendingHeadwear(RE::Actor* actor) const;
+    bool RestorePendingHeadwear(RE::Actor* actor);
 
     // Preview — temporary equip for Add Wig browsing
     void StartPreview();
@@ -94,6 +101,9 @@ public:
 
     // Re-equip all on game load
     void ReEquipAllAssignments();
+    // After a load, after the player's outfit: their wig goes back on unless headgear hides
+    // it, and their hair is re-tinted.
+    void ReconcilePlayerWig();
 
     // Re-apply all hair colors (called on cell change)
     void ReApplyAllHairColors();
@@ -115,6 +125,9 @@ public:
     // (scalp, wig, wig sub-shapes, brows/beard) to the resolved per-actor color.
     void RetintActorHair(RE::Actor* actor);
     void ScheduleActorHairRetint(RE::ActorHandle handle, std::initializer_list<int32_t> delays);
+    // The game rebuilds the player's hair model on armor changes, cell loads and game loads;
+    // Tailor's color goes back on after. Without a Tailor color the game's own color stays.
+    void SchedulePlayerHairRetint();
 
     // Re-split shared hair materials on every other loaded actor. Heals bleed already
     // baked into a save by an older build (or by another mod calling UpdateHairColor)
@@ -132,6 +145,21 @@ private:
     WigManager() = default;
 
     void RemoveCurrentWig(RE::Actor* actor);
+
+    // The player's half (WigManagerPlayer.cpp): the player's wig goes on and comes off
+    // through PlayerWardrobe and is never locked, so the player may take it off.
+    bool EquipPlayerWig(RE::Actor* player, const WigEntry& wig);
+    bool ResetPlayerWig(RE::Actor* player);
+    void ReEquipPlayerWig(RE::Actor* player);
+    void ConfirmPlayerSituationCycle(RE::Actor* player, OutfitSituation situation, const WigEntry& wig);
+    bool ApplyPlayerHairColor(RE::Actor* player);
+    bool ResetPlayerHairColor(RE::Actor* player);
+    bool ResetPlayerToDefaultHair(RE::Actor* player);
+    void QueuePlayerWigRecovery(RE::Actor* player, RE::FormID changedArmorId, bool equipped, const char* eventName);
+    void RecoverPlayerWig(Tailor::Wigs::WigRecoveryPolicy::Request request, bool takenOffInMenu);
+
+    void ClearActiveHeadwear();
+    void DeferHeadwearRestore();
     RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* event,
         RE::BSTEventSource<RE::TESEquipEvent>*) override;
     RE::BSEventNotifyControl ProcessEvent(const RE::TESContainerChangedEvent* event,
@@ -152,7 +180,18 @@ private:
     Tailor::Wigs::HeadwearPreview _headwearPreview;
     RE::ActorHandle _headwearActor;
     bool _wigScreen = false;
+    // The player took their wig off in an inventory menu; it stays off until Tailor next changes it.
+    bool _playerWigLeftOff = false;
+    struct PendingHeadwear
+    {
+        Tailor::Wigs::HeadwearPreview headwear;
+        std::optional<PreviewState> original;
+    };
+    std::unordered_map<RE::FormID, PendingHeadwear> _pendingHeadwear;
 
+    // Kept across game loads on purpose, unlike the outfit forms PrepareForGameLoad drops: tested in
+    // game, each colour form survives a load, even of a save older than the form, at the same
+    // address, under the same ID that no new form takes, and with the NPC record still on it.
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _originalHairColors;
     std::unordered_map<RE::FormID, RE::BGSColorForm*> _cachedColorForms;
     std::unordered_map<RE::FormID, uint32_t>           _hairColorGeneration;

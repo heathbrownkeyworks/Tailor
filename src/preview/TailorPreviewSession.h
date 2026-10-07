@@ -11,7 +11,7 @@ namespace Tailor::Preview
     enum class EndReason : std::uint8_t
     {
         UserClose, FocusLost, TargetLost, CameraChanged,
-        PreLoadGame, NewGame, Shutdown, SetupFailed
+        PreLoadGame, NewGame, Shutdown, SetupFailed, TargetSwitched
     };
 
     struct ViewportRect
@@ -49,8 +49,10 @@ namespace Tailor::Preview
         void EnforceMovementHold(RE::Actor* a_actor);
         void ReleaseTargetHold(RE::Actor* a_actor) noexcept;
         void SetStatus(bool a_ready, std::string a_message);
+        void QueueClose(std::uint64_t generation, EndReason reason); // _mutex held
         bool AcquireCamera(RE::Actor* a_actor);
         void ReleaseCamera() noexcept;
+        void RestoreAfterSession(EndReason a_reason) noexcept;
         bool CalculateFraming(RE::Actor* a_actor);
         bool ApplyCamera();
 
@@ -68,9 +70,13 @@ namespace Tailor::Preview
         std::int64_t _missing3DSince{0};
         std::int64_t _cameraWaitStarted{0};
         bool _ready{false}, _statusDirty{false};
+        bool _closeQueued{false};
         std::string _statusMessage;
         PreviewScene _scene;
         RE::NiPoint3 _framingCenter{};
+        RE::NiPoint3 _framedFeet{};  // where the target stood when last framed
+        bool _restoreFirstPerson{false};
+        bool _redrawWeapons{false};
         float _framingDistance{0};
         CameraFraming _framingFit{};
         RE::BSTSmartPointer<RE::TESCameraState> _savedCameraState;

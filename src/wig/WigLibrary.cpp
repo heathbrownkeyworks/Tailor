@@ -1,4 +1,6 @@
 #include "wig/WigLibrary.h"
+#include "persistence/AssignmentIdentity.h"
+#include "persistence/JsonFile.h"
 
 WigLibrary& WigLibrary::GetSingleton()
 {
@@ -15,82 +17,61 @@ std::filesystem::path WigLibrary::GetLibraryPath() const
 
 void WigLibrary::Load()
 {
-    int prunedCount = 0;
-
-    {
-        std::lock_guard lock(_mutex);
-
-        auto path = GetLibraryPath();
-        logger::info("Library path: {}", path.string());
-
+    std::lock_guard lock(_mutex);
+    ++_revision;
+    _saveAllowed = false;
+    try {
+        const auto path = GetLibraryPath();
         if (!std::filesystem::exists(path)) {
-            logger::info("No library file found, creating empty library");
-            try {
-                nlohmann::json json;
-                json["version"] = 1;
-                json["categories"] = nlohmann::json::object();
-                std::ofstream file(path);
-                if (!file.is_open()) {
-                    logger::error("Failed to create library file at {}", path.string());
-                    return;
-                }
-                file << json.dump(2);
-                file.flush();
-                logger::info("Created empty library at {}", path.string());
-            }
-            catch (const std::exception& e) {
-                logger::error("Exception creating library file: {}", e.what());
-            }
+            for (auto& category : _categories) category.clear();
+            _saveAllowed = true;
             return;
         }
-
-        try {
-            std::ifstream file(path);
-            auto json = nlohmann::json::parse(file);
-
-            for (size_t i = 0; i < kCategoryCount; ++i) {
-                auto key = std::string(kCategoryNames[i]);
-                _categories[i].clear();
-
-                if (!json.contains("categories") || !json["categories"].contains(key)) {
-                    continue;
-                }
-
-                for (auto& entry : json["categories"][key]) {
-                    WigEntry wig;
-                    wig.formId = std::stoul(entry["formId"].get<std::string>(), nullptr, 16);
-                    wig.plugin = entry["plugin"].get<std::string>();
-                    wig.name = entry.value("name", "");
-
-                    auto* armor = wig.Resolve();
-                    if (!armor) {
-                        logger::warn("Pruning stale wig '{}' from '{}' — plugin not loaded",
-                            wig.name, wig.plugin);
-                        prunedCount++;
-                        continue;
-                    }
-                    wig.name = SanitizeUtf8(armor->GetName());
-                    _categories[i].push_back(std::move(wig));
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        if (json.value("version", 1) != 1 || !json.contains("categories") || !json["categories"].is_object()) {
+            throw std::runtime_error("unsupported wig library document");
+        }
+        std::array<std::vector<WigEntry>, kCategoryCount> parsed;
+        bool complete = true;
+        for (size_t i = 0; i < kCategoryCount; ++i) {
+            const auto key = std::string(kCategoryNames[i]);
+            if (!json["categories"].contains(key)) continue;
+            if (!json["categories"][key].is_array()) {
+                complete = false;
+                logger::error("Wig library: invalid category '{}'; other categories remain active, file preserved and saves disabled", key);
+                continue;
+            }
+            std::size_t row = 0;
+            for (const auto& entry : json["categories"][key]) {
+                ++row;
+                try {
+                    WigEntry wig{Tailor::Persistence::ReadLocalFormID(entry.at("formId").get<std::string>()),
+                        entry.at("plugin").get<std::string>(), entry.value("name", "")};
+                    if (wig.plugin.empty()) throw std::runtime_error("missing wig plugin");
+                    if (const auto* armor = wig.Resolve()) wig.name = SanitizeUtf8(armor->GetName());
+                    parsed[i].push_back(std::move(wig));
+                } catch (const std::exception& e) {
+                    complete = false;
+                    logger::error("Wig library: category '{}' row {} could not load; other rows remain active, file preserved and saves disabled: {}", key, row, e.what());
                 }
             }
-
-            logger::info("Wig library loaded from {}", path.string());
         }
-        catch (const std::exception& e) {
-            logger::error("Failed to load wig library: {}", e.what());
-        }
-    }
-
-    // Clean stale entries from the JSON file (lock released, Save() acquires its own)
-    if (prunedCount > 0) {
-        logger::info("Pruned {} stale wig(s) from uninstalled mods — saving cleaned library", prunedCount);
-        Save();
+        _categories = std::move(parsed);
+        _saveAllowed = complete;
+        logger::info("Wig library loaded; unavailable wigs retained");
+    } catch (const std::exception& e) {
+        logger::error("Failed to load wig library; file preserved and saves disabled: {}", e.what());
     }
 }
 
 void WigLibrary::Save() const
 {
     std::lock_guard lock(_mutex);
+    if (!_saveAllowed) {
+        logger::error("Wig library: save skipped because the file was not loaded successfully");
+        return;
+    }
 
     nlohmann::json json;
     json["version"] = 1;
@@ -111,13 +92,12 @@ void WigLibrary::Save() const
 
     try {
         auto path = GetLibraryPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("Failed to open library file for writing: {}", path.string());
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("Failed to save wig library to {}: {}", path.string(), error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("Wig library saved to {}", path.string());
     }
     catch (const std::exception& e) {
@@ -153,6 +133,7 @@ void WigLibrary::AddWig(WigCategory cat, const WigEntry& entry)
     }
 
     _categories[static_cast<size_t>(cat)].push_back(entry);
+    ++_revision;
     logger::info("Added wig '{}' to category {}", entry.name, CategoryToString(cat));
 }
 
@@ -165,6 +146,7 @@ bool WigLibrary::RemoveWig(WigCategory cat, const WigEntry& entry)
     if (it != vec.end()) {
         logger::info("Removed wig '{}' from category {}", entry.name, CategoryToString(cat));
         vec.erase(it);
+        ++_revision;
         return true;
     }
     return false;
@@ -183,4 +165,22 @@ void WigLibrary::Clear()
     for (auto& cat : _categories) {
         cat.clear();
     }
+    ++_revision;
+}
+
+std::vector<RE::TESObjectARMO*> WigLibrary::ResolvedWigs() const
+{
+    std::vector<RE::TESObjectARMO*> wigs;
+    for (std::size_t i = 0; i < kCategoryCount; ++i) {
+        for (const auto& wig : GetCategory(static_cast<WigCategory>(i))) {
+            if (auto* armor = wig.Resolve()) wigs.push_back(armor);
+        }
+    }
+    return wigs;
+}
+
+std::uint64_t WigLibrary::Revision() const
+{
+    std::lock_guard lock(_mutex);
+    return _revision;
 }

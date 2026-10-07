@@ -40,5 +40,6 @@ private:
     std::filesystem::path GetPath() const;
 
     std::vector<RGBColor> _colors;
+    bool                  _saveAllowed = false;  // A failed or incomplete load must never replace the file.
     mutable std::mutex    _mutex;
 };

@@ -1,6 +1,8 @@
 #include "outfit/OutfitTransfer.h"
 #include "outfit/OutfitLibrary.h"
+#include "outfit/OutfitNamePolicy.h"
 #include "outfit/OutfitStore.h"
+#include "persistence/JsonFile.h"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -21,7 +23,8 @@ namespace
     {
         const auto lower = Lower(filename);
         return lower == "assignments.json" || lower == "library.json" || lower == "outfits.json" ||
-            lower == "blacklist.json" || lower.starts_with("library.pre-unisex-defaults.");
+            lower == "blacklist.json" || lower.starts_with("library.pre-unisex-defaults.") ||
+            lower.starts_with("outfits.pre-unique-ids.");
     }
     bool InvalidFilenameChars(const std::string& name)
     {
@@ -32,7 +35,7 @@ namespace
     bool KnownKey(const std::string& key)
     {
         return key == "heavy" || key == "light" || key == "clothing" || key == "adventuring" ||
-            key == "town" || key == "home" || key == "sleep";
+            key == "town" || key == "home" || key == "sleep" || key == "swimming" || key == "warm";
     }
     Json ItemsJson(const CustomOutfit& outfit)
     {
@@ -56,21 +59,7 @@ namespace
         for (const auto& item : outfit.items) result.second.emplace(Lower(item.plugin), item.formId);
         return result;
     }
-    void WriteNew(const fs::path& path, const std::string& content)
-    {
-        // Exclusive creation also protects against repeated/racing export requests.
-        std::ofstream file(path, std::ios::binary | std::ios::out | std::ios::noreplace);
-        if (!file.is_open()) throw std::runtime_error("Cannot create the file. Use a new name and check folder permissions.");
-        file << content;
-        file.flush();
-        const bool written = file.good();
-        file.close();
-        if (!written || file.fail()) {
-            std::error_code ignored;
-            fs::remove(path, ignored);
-            throw std::runtime_error("Could not finish writing the file. Check available disk space and folder permissions.");
-        }
-    }
+    using Tailor::Persistence::WriteNew;
     void CommitFiles(const std::string& outfits, const std::string& library)
     {
         // Prepare both files and exact backups before replacing either document.
@@ -143,7 +132,7 @@ nlohmann::json OutfitTransfer::Catalog()
     for (const auto& outfit : store._outfits) {
         auto categories = CategoriesFor(outfit.id, library._categories);
         if (categories.empty() || outfit.items.empty()) continue;
-        outfits.push_back({{"id", outfit.id}, {"name", outfit.name}, {"categories", categories}, {"itemCount", outfit.items.size()}});
+        outfits.push_back({{"id", outfit.id}, {"name", outfit.name}, {"sex", static_cast<int>(outfit.sex)}, {"categories", categories}, {"itemCount", outfit.items.size()}});
     }
     return outfits;
 }
@@ -175,7 +164,7 @@ nlohmann::json OutfitTransfer::Export(const std::string& name, const std::vector
         const auto outfit = std::find_if(store._outfits.begin(), store._outfits.end(), [id](const auto& o) { return o.id == id; });
         const auto categories = CategoriesFor(id, library._categories);
         if (outfit == store._outfits.end() || categories.empty() || outfit->items.empty()) throw std::runtime_error("A selected outfit is no longer exportable. Refresh the list and try again.");
-        selected.push_back({{"name", outfit->name}, {"categories", categories}, {"items", ItemsJson(*outfit)}});
+        selected.push_back({{"name", outfit->name}, {"sex", static_cast<int>(outfit->sex)}, {"categories", categories}, {"items", ItemsJson(*outfit)}});
     }
     fs::create_directories(Root());
     const auto filename = name + ".json";
@@ -185,6 +174,11 @@ nlohmann::json OutfitTransfer::Export(const std::string& name, const std::vector
 
 nlohmann::json OutfitTransfer::Import(const std::string& filename)
 {
+    // While either file has saves off (Tailor couldn't fully read it at startup), an import would write both files
+    // from a partial library.
+    if (!OutfitStore::GetSingleton().SaveAllowed() || !OutfitLibrary::GetSingleton().SaveAllowed()) {
+        throw std::runtime_error("Tailor couldn't fully read outfits.json or library.json, so it can't import into them. See Tailor.log.");
+    }
     if (!IsImportFilename(filename)) throw std::runtime_error("This filename cannot be imported into Tailor.");
     const auto path = Root() / fs::path(std::u8string(filename.begin(), filename.end()));
     if (!fs::is_regular_file(fs::symlink_status(path))) throw std::runtime_error("Choose a regular JSON file from the Tailor folder.");
@@ -241,8 +235,20 @@ nlohmann::json OutfitTransfer::Import(const std::string& filename)
                 if (InvalidFilenameChars(item.plugin) || !(plugin.ends_with(".esp") || plugin.ends_with(".esm") || plugin.ends_with(".esl"))) throw std::runtime_error("An item has an invalid plugin filename.");
                 outfit.items.push_back(std::move(item));
             }
+            // Files from before outfits had a sex carry none; those outfits are Unisex.
+            if (entry.contains("sex")) {
+                const auto sex = ReadOutfitSex(entry["sex"]);
+                if (!sex) throw std::runtime_error("Unsupported sex value");
+                outfit.sex = *sex;
+            }
             const auto identity = OutfitIdentity(outfit);
             if (identities.contains(identity)) { ++duplicates; continue; }
+            // Names are unique, so a taken name is skipped however different the pieces are.
+            // `outfits` holds the existing outfits and the ones added earlier from this file.
+            if (std::any_of(outfits.begin(), outfits.end(), [&](const auto& other) { return Tailor::Outfits::SameName(other.name, outfit.name); })) {
+                skipped.push_back({{"name", name}, {"reason", "An outfit with this name already exists"}});
+                continue;
+            }
             for (const auto& item : outfit.items) {
                 auto* armor = item.Resolve();
                 if (!armor || armor->GetLocalFormID() != item.formId) throw std::runtime_error("Missing or invalid armor: " + item.name + " (" + item.plugin + ", local ID " + std::to_string(item.formId) + ")");

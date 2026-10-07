@@ -1,10 +1,8 @@
 # Local workspace metadata
-.agents/
-.claude/
-.codex/
-AGENTS.md
-CLAUDE.md
-docs/
+docs/*
+!docs/api/
+tools/*
+!tools/api-test/
 tests/
 signing/
 

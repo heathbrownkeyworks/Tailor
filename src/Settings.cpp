@@ -14,8 +14,12 @@ void Settings::Load()
 {
     auto path = std::filesystem::path("Data/SKSE/Plugins/Tailor.ini");
 
-    if (!std::filesystem::exists(path)) {
+    // Only an INI that is really missing gets the defaults: one Tailor can't check is never written over.
+    std::error_code error;
+    if (!std::filesystem::exists(path, error) && !error) {
         CreateDefaultINI(path.string());
+    } else if (error) {
+        logger::warn("Settings: could not check {} ({}); reading it as it is", path.string(), error.message());
     }
 
     auto file = path.string();
@@ -34,21 +38,45 @@ void Settings::Load()
     _refreshMorphs = GetPrivateProfileIntA("Compatibility", "RefreshMorphs", 1, file.c_str()) != 0;
 
     _grantPower = GetPrivateProfileIntA("Power", "GrantPower", 1, file.c_str()) != 0;
-    _autoFavorite = GetPrivateProfileIntA("Power", "AutoFavorite", 1, file.c_str()) != 0;
     _controllerEnabled = GetPrivateProfileIntA("Controller", "Enabled", 1, file.c_str()) != 0;
-    _controllerShortcutEnabled = GetPrivateProfileIntA("Controller", "ShortcutEnabled", 1, file.c_str()) != 0;
     char control[64]{};
-    GetPrivateProfileStringA("Controller", "Button", "Start", control, sizeof(control), file.c_str());
-    _controllerButton = control;
-    GetPrivateProfileStringA("Controller", "Modifier", "LeftShoulder", control, sizeof(control), file.c_str());
-    _controllerModifier = control;
 
-    logger::info("Settings: ModifierKey=0x{:02X}, ActivateKey=0x{:02X}, RefreshMorphs={}, GrantPower={}, AutoFavorite={}",
-        _modifierKey, _activateKey, _refreshMorphs, _grantPower, _autoFavorite);
+    // Preserve the previous prompt preference if that optional INI is present.
+    // Tailor's own setting wins; Meridian is not loaded or required.
+    using namespace Tailor::ImGuiUI::input;
+    char previousGlyphs[64]{};
+    GetPrivateProfileStringA("Controller", "GlyphFamily", "Xbox", previousGlyphs, sizeof(previousGlyphs),
+        "Data/SKSE/Plugins/MeridianUI.ini");
+    GetPrivateProfileStringA("Controller", "GlyphFamily", previousGlyphs, control, sizeof(control), file.c_str());
+    _controllerGlyphs = EqualControlName(control, "PlayStation") ? "playstation" :
+        EqualControlName(control, "Generic") ? "generic" : "xbox";
+    for (std::size_t i = 0; i < ControllerActions.size(); ++i) {
+        const auto& action = ControllerActions[i];
+        GetPrivateProfileStringA("Controller", action.setting, action.defaultButton, control, sizeof(control), file.c_str());
+        _controllerBindings[i] = ControllerButton(control);
+        _controllerBindingNames[i] = ControllerButtonName(_controllerBindings[i]);
+    }
+    if (!ValidControllerBindings(_controllerBindings)) {
+        logger::warn("Tailor controller bindings invalid or duplicated; using the complete default mapping");
+        _controllerBindings = DefaultControllerBindings;
+        for (std::size_t i = 0; i < ControllerActions.size(); ++i)
+            _controllerBindingNames[i] = ControllerActions[i].defaultButton;
+    }
+
+    logger::info("Settings: ModifierKey=0x{:02X}, ActivateKey=0x{:02X}, RefreshMorphs={}, GrantPower={}",
+        _modifierKey, _activateKey, _refreshMorphs, _grantPower);
 }
 
 void Settings::CreateDefaultINI(const std::string& path) const
 {
+    // Never over the player's INI, nor one Tailor can't check.
+    std::error_code error;
+    const bool missing = !std::filesystem::exists(path, error) && !error;
+    if (!missing) {
+        logger::warn("Settings: not writing a default INI at {}; one is there, or it can't be checked", path);
+        return;
+    }
+
     std::ofstream file(path);
     if (!file.is_open()) {
         logger::warn("Settings: Could not create default INI at {}", path);
@@ -108,26 +136,31 @@ RefreshMorphs=1
 [Power]
 ; GrantPower: Grant the "Tailor" Lesser Power (from Tailor.esp) to the player
 ; on load, so the UI can be opened from the magic/favorites menus.
+; On a controller, the power is how to open Tailor.
+; Tailor keeps it in Favorites unless Disable Tailor Favorite is on in its Settings.
 ; Set to 0 if you only want the hotkey.
 ; Default: 1 (enabled)
 GrantPower=1
 
-; AutoFavorite: Add the Tailor power to Favorites when it is first granted.
-; Only applies once — if you later remove it from Favorites, it stays removed.
-; Default: 1 (enabled)
-AutoFavorite=1
-
 [Controller]
-; Optional Meridian.Input/1 support. Older runtimes keep keyboard/mouse use.
+; Native controller navigation. Keyboard and mouse remain available.
+; No controller button opens Tailor: use the Tailor power from Favorites.
 Enabled=1
-; Default opener: LB + Menu/Start. Set ShortcutEnabled=0 to disable only the opener.
-ShortcutEnabled=1
-Modifier=LeftShoulder
-Button=Start
 ; Digital names: DpadUp/Down/Left/Right, Start, Back, LeftThumb, RightThumb,
 ; LeftShoulder, RightShoulder, South (A), East (B), West (X), North (Y).
-; Modifier may also be None. LB+Y and RB+Back are reserved for Horde/Romantasy.
-; Conflicts reported by Meridian disable this opener without changing other mods.
+; R3 toggles cursor mode.
+; Prompt family: Xbox, PlayStation, Generic. If omitted, uses an existing
+; MeridianUI.ini preference when available, otherwise Xbox. No Meridian dependency.
+;GlyphFamily=Xbox
+; Optional action remaps. Names are case insensitive, unique digital buttons.
+; D-pad is reserved for navigation. Invalid/duplicate bindings restore all defaults.
+Accept=South
+Cancel=East
+Secondary=West
+Tertiary=North
+PreviousTab=LeftShoulder
+NextTab=RightShoulder
+ToggleCursor=RightThumb
 )";
 
     logger::info("Settings: Created default INI at {}", path);

@@ -1,4 +1,7 @@
 #include "wig/WigAssignments.h"
+#include "player/PlayerIds.h"
+#include "persistence/AssignmentIdentity.h"
+#include "persistence/JsonFile.h"
 
 WigAssignments& WigAssignments::GetSingleton()
 {
@@ -15,140 +18,106 @@ std::filesystem::path WigAssignments::GetAssignmentsPath() const
 
 void WigAssignments::Load()
 {
-    int prunedCount = 0;
-
-    {
-        auto path = GetAssignmentsPath();
-        logger::info("Assignments path: {}", path.string());
-
+    std::lock_guard lock(_mutex);
+    _saveAssignmentsAllowed = false;
+    try {
+        const auto path = GetAssignmentsPath();
         if (!std::filesystem::exists(path)) {
-            logger::info("No assignments file found, starting with empty assignments");
-            try {
-                nlohmann::json json;
-                json["version"] = 1;
-                json["assignments"] = nlohmann::json::array();
-                std::ofstream file(path);
-                if (!file.is_open()) {
-                    logger::error("Failed to create assignments file at {}", path.string());
-                    return;
-                }
-                file << json.dump(2);
-                file.flush();
-                logger::info("Created empty assignments file at {}", path.string());
-            }
-            catch (const std::exception& e) {
-                logger::error("Exception creating assignments file: {}", e.what());
-            }
+            _assignments.clear();
+            _retainedAssignments = nlohmann::json::array();
+            _inferAssignedWig.clear();
+            _saveAssignmentsAllowed = true;
             return;
         }
-
-        // Parse into temp map first — only swap on success to prevent data loss
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        if (json.value("version", 1) != 1 || !json.contains("assignments") || !json["assignments"].is_array()) {
+            throw std::runtime_error("unsupported wig assignment document");
+        }
         std::unordered_map<RE::FormID, ActorWigState> parsed;
+        auto retained = nlohmann::json::array();
+        std::unordered_set<RE::FormID> inferAssigned;
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& entry : json["assignments"]) {
+            ++row;
+            try {
+                const auto actorLocalId = Tailor::Persistence::ReadLocalFormID(entry.at("actorFormId").get<std::string>());
+                const auto runtimeId = Tailor::Persistence::ActorRuntimeID(actorLocalId, entry.at("actorPlugin").get<std::string>());
+                if (runtimeId == Tailor::Player::kPlayerRef) continue;
 
-        try {
-            std::ifstream file(path);
-            auto json = nlohmann::json::parse(file);
-
-            if (!json.contains("assignments")) {
-                logger::warn("Assignments file missing 'assignments' key");
-                return;
-            }
-
-            auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            if (!dataHandler) {
-                logger::error("TESDataHandler not available during assignments load");
-                return;
-            }
-
-            for (auto& entry : json["assignments"]) {
-                auto actorFormId = std::stoul(entry["actorFormId"].get<std::string>(), nullptr, 16);
-                auto actorPlugin = entry["actorPlugin"].get<std::string>();
-
-                // Resolve actor
-                auto* actorForm = dataHandler->LookupForm(actorFormId, actorPlugin);
-                if (!actorForm) {
-                    logger::warn("Pruning assignment: actor 0x{:06X} from '{}' not found",
-                        actorFormId, actorPlugin);
-                    prunedCount++;
+                ActorWigState state;
+                const auto wigId = entry.value("wigFormId", std::string{});
+                const auto wigPlugin = entry.value("wigPlugin", std::string{});
+                if (wigId.empty() != wigPlugin.empty()) throw std::runtime_error("incomplete wig identity");
+                if (!wigId.empty()) {
+                    state.currentWig = {Tailor::Persistence::ReadLocalFormID(wigId), wigPlugin, entry.value("wigName", "")};
+                    if (const auto* armor = state.currentWig.Resolve()) state.currentWig.name = SanitizeUtf8(armor->GetName());
+                    state.itemAdded = entry.value("itemAdded", false);
+                }
+                // The wig set in the Hair Dresser. Rows saved before it was kept have no field: once the
+                // situations load, a worn wig that isn't a situation wig is taken as it.
+                const bool assignedKnown = entry.contains("assignedWigFormId");
+                const auto assignedId = entry.value("assignedWigFormId", std::string{});
+                const auto assignedPlugin = entry.value("assignedWigPlugin", std::string{});
+                if (assignedId.empty() != assignedPlugin.empty()) throw std::runtime_error("incomplete assigned wig identity");
+                if (!assignedId.empty()) {
+                    state.assignedWig = {Tailor::Persistence::ReadLocalFormID(assignedId), assignedPlugin, entry.value("assignedWigName", "")};
+                    if (const auto* armor = state.assignedWig.Resolve()) state.assignedWig.name = SanitizeUtf8(armor->GetName());
+                }
+                state.hairColorR = static_cast<int16_t>(entry.value("hairColorR", -1));
+                state.hairColorG = static_cast<int16_t>(entry.value("hairColorG", -1));
+                state.hairColorB = static_cast<int16_t>(entry.value("hairColorB", -1));
+                if (!runtimeId) {
+                    retained.push_back(entry);
                     continue;
                 }
-
-                ActorWigState wigState;
-
-                // Wig fields are optional (color-only assignments have no wig)
-                auto wigFormIdStr = entry.value("wigFormId", std::string{});
-                auto wigPlugin = entry.value("wigPlugin", std::string{});
-
-                if (!wigFormIdStr.empty() && !wigPlugin.empty()) {
-                    WigEntry wig;
-                    wig.formId = std::stoul(wigFormIdStr, nullptr, 16);
-                    wig.plugin = wigPlugin;
-                    wig.name = entry.value("wigName", "");
-
-                    auto* armor = wig.Resolve();
-                    if (!armor) {
-                        logger::warn("Pruning assignment: wig '{}' from '{}' not found",
-                            wig.name, wigPlugin);
-                    } else {
-                        wig.name = SanitizeUtf8(armor->GetName());
-                        wigState.currentWig = std::move(wig);
-                        wigState.itemAdded = entry.value("itemAdded", false);
-                    }
+                if (!state.IsEmpty()) {
+                    if (!parsed.emplace(runtimeId, std::move(state)).second) throw std::runtime_error("duplicate wig assignment");
+                    if (!assignedKnown) inferAssigned.insert(runtimeId);
                 }
-
-                // Hair color fields (optional)
-                wigState.hairColorR = static_cast<int16_t>(entry.value("hairColorR", -1));
-                wigState.hairColorG = static_cast<int16_t>(entry.value("hairColorG", -1));
-                wigState.hairColorB = static_cast<int16_t>(entry.value("hairColorB", -1));
-
-                // Only store if there's something meaningful (wig or color)
-                if (wigState.currentWig.formId != 0 || wigState.HasHairColor()) {
-                    parsed[actorForm->GetFormID()] = std::move(wigState);
-                }
+            } catch (const std::exception& e) {
+                complete = false;
+                logger::error("Wig assignments: row {} could not load; other rows remain active, file preserved and saves disabled: {}", row, e.what());
             }
-
-            logger::info("Loaded {} wig assignments from {}", parsed.size(), path.string());
         }
-        catch (const std::exception& e) {
-            logger::error("Failed to load wig assignments: {}", e.what());
-            return;  // keep existing _assignments intact
-        }
-
-        // Success — swap into live map
-        std::lock_guard lock(_mutex);
         _assignments = std::move(parsed);
-    }
-
-    // Clean stale entries (lock released, Save() acquires its own)
-    if (prunedCount > 0) {
-        logger::info("Pruned {} stale assignment(s) — saving cleaned file", prunedCount);
-        Save();
+        _retainedAssignments = std::move(retained);
+        _inferAssignedWig = std::move(inferAssigned);
+        _saveAssignmentsAllowed = complete;
+        logger::info("Loaded {} wig assignments, retained {} dormant row(s)", _assignments.size(), _retainedAssignments.size());
+    } catch (const std::exception& e) {
+        logger::error("Failed to load wig assignments; file preserved and saves disabled: {}", e.what());
     }
 }
 
 void WigAssignments::Save() const
 {
     std::lock_guard lock(_mutex);
+    if (!_saveAssignmentsAllowed) {
+        logger::error("Wig assignments: save skipped because the file was not loaded successfully");
+        return;
+    }
 
     nlohmann::json json;
     json["version"] = 1;
-    json["assignments"] = nlohmann::json::array();
+    json["assignments"] = _retainedAssignments;
 
     auto* dataHandler = RE::TESDataHandler::GetSingleton();
     if (!dataHandler) return;
 
     for (auto& [actorRuntimeId, state] : _assignments) {
+        // The player's data belongs to each save's co-save, never this shared file.
+        if (actorRuntimeId == Tailor::Player::kPlayerRef) continue;
         // Decompose runtime FormID to local FormID + plugin (same method as OutfitAssignments)
-        auto* actorForm = RE::TESForm::LookupByID(actorRuntimeId);
-        if (!actorForm) {
-            logger::warn("Save: actor 0x{:08X} no longer exists, skipping", actorRuntimeId);
-            continue;
-        }
-
         uint8_t modIndex = (actorRuntimeId >> 24) & 0xFF;
         const RE::TESFile* sourceFile = nullptr;
         RE::FormID localFormId = 0;
 
+        if (modIndex == 0xFF) {
+            logger::warn("Wig assignments: runtime actor 0x{:X} has no persistent plugin identity", actorRuntimeId);
+            continue;
+        }
         if (modIndex != 0xFE) {
             sourceFile = dataHandler->LookupLoadedModByIndex(modIndex);
             localFormId = actorRuntimeId & 0x00FFFFFF;
@@ -159,8 +128,8 @@ void WigAssignments::Save() const
         }
 
         if (!sourceFile) {
-            logger::warn("Save: could not resolve plugin for actor 0x{:08X}, skipping", actorRuntimeId);
-            continue;
+            logger::error("Wig assignments: save cancelled; could not resolve plugin for actor 0x{:08X}", actorRuntimeId);
+            return;
         }
 
         nlohmann::json entry;
@@ -175,6 +144,16 @@ void WigAssignments::Save() const
             entry["itemAdded"] = state.itemAdded;
         }
 
+        // The Hair Dresser's wig, written for every row and empty when none, so a load tells a row
+        // saved without one from a row saved before it was kept. A row still waiting to be inferred
+        // is saved as it was, without the fields, so a later session infers it.
+        if (!_inferAssignedWig.contains(actorRuntimeId)) {
+            const bool assigned = state.assignedWig.formId != 0 && !state.assignedWig.plugin.empty();
+            entry["assignedWigFormId"] = assigned ? std::format("0x{:06X}", state.assignedWig.formId) : std::string{};
+            entry["assignedWigPlugin"] = assigned ? state.assignedWig.plugin : std::string{};
+            entry["assignedWigName"] = assigned ? state.assignedWig.name : std::string{};
+        }
+
         // Hair color fields (only if a color override is active)
         if (state.HasHairColor()) {
             entry["hairColorR"] = static_cast<int>(state.hairColorR);
@@ -187,13 +166,12 @@ void WigAssignments::Save() const
 
     try {
         auto path = GetAssignmentsPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("Failed to open assignments file for writing: {}", path.string());
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("Failed to save wig assignments to {}: {}", path.string(), error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("Saved {} wig assignments to {}", json["assignments"].size(), path.string());
     }
     catch (const std::exception& e) {
@@ -233,19 +211,62 @@ void WigAssignments::ClearAssignment(RE::FormID actorFormId)
     if (it != _assignments.end()) {
         it->second.currentWig = WigEntry{};
         it->second.itemAdded = false;
-        // If no hair color either, remove the entry entirely
-        if (!it->second.HasHairColor()) {
+        // If no hair color or assigned wig either, remove the entry entirely
+        if (it->second.IsEmpty()) {
             _assignments.erase(it);
         }
     }
     logger::info("Cleared wig assignment for actor {:08X}", actorFormId);
 }
 
+void WigAssignments::SetAssignedWig(RE::FormID actorFormId, const WigEntry& wig)
+{
+    std::lock_guard lock(_mutex);
+    // Setting or clearing the assigned wig ends the wait for its inference, even with no row to clear.
+    _inferAssignedWig.erase(actorFormId);
+    const auto it = _assignments.find(actorFormId);
+    if (wig.formId == 0) {
+        if (it == _assignments.end()) return;
+        it->second.assignedWig = WigEntry{};
+        // Nothing left to keep: no worn wig and no hair color either.
+        if (it->second.IsEmpty()) _assignments.erase(it);
+        return;
+    }
+    if (it != _assignments.end()) {
+        it->second.assignedWig = wig;
+    } else {
+        ActorWigState state;
+        state.assignedWig = wig;
+        _assignments[actorFormId] = std::move(state);
+    }
+}
+
+void WigAssignments::InferAssignedWigs()
+{
+    std::lock_guard lock(_mutex);
+    // An incomplete situations load would pass a situation wig off as the assigned one, and the next
+    // save would make that final: the rows wait, saved without the field, for a session that loads whole.
+    if (!_saveSituationsAllowed) {
+        logger::info("Wig assignments: assigned wig inference waits for a complete wig situations load");
+        return;
+    }
+    for (const auto actorId : _inferAssignedWig) {
+        const auto it = _assignments.find(actorId);
+        if (it == _assignments.end() || it->second.currentWig.formId == 0) continue;
+        const auto situations = _situations.find(actorId);
+        if (situations == _situations.end() || !situations->second.Holds(it->second.currentWig)) {
+            it->second.assignedWig = it->second.currentWig;
+        }
+    }
+    _inferAssignedWig.clear();
+}
+
 std::optional<WigEntry> WigAssignments::GetAssignment(RE::FormID actorFormId) const
 {
     std::lock_guard lock(_mutex);
     auto it = _assignments.find(actorFormId);
-    if (it != _assignments.end()) {
+    // An entry can hold a hair color alone, which is no wig.
+    if (it != _assignments.end() && it->second.currentWig.formId != 0) {
         return it->second.currentWig;
     }
     return std::nullopt;
@@ -267,6 +288,7 @@ void WigAssignments::Clear()
 {
     std::lock_guard lock(_mutex);
     _assignments.clear();
+    _retainedAssignments = nlohmann::json::array();
 }
 
 void WigAssignments::SetHairColor(RE::FormID actorFormId, int16_t r, int16_t g, int16_t b)
@@ -294,8 +316,8 @@ void WigAssignments::ClearHairColor(RE::FormID actorFormId)
         it->second.hairColorR = -1;
         it->second.hairColorG = -1;
         it->second.hairColorB = -1;
-        // If no wig either, remove the entry entirely
-        if (it->second.currentWig.formId == 0 && it->second.currentWig.plugin.empty()) {
+        // If no wig or assigned wig either, remove the entry entirely
+        if (it->second.IsEmpty()) {
             _assignments.erase(it);
         }
     }
@@ -324,100 +346,73 @@ std::filesystem::path WigAssignments::GetSituationsPath() const
 
 void WigAssignments::LoadSituations()
 {
-    int prunedCount = 0;
-
-    {
-        auto path = GetSituationsPath();
+    std::lock_guard lock(_mutex);
+    _saveSituationsAllowed = false;
+    try {
+        const auto path = GetSituationsPath();
         if (!std::filesystem::exists(path)) {
-            logger::info("No wig situations file found at {}", path.string());
+            _situations.clear();
+            _retainedSituations = nlohmann::json::array();
+            _saveSituationsAllowed = true;
             return;
         }
-
-        // Parse into temp map first — only swap on success to prevent data loss
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        if (json.value("version", 1) != 1 || !json.contains("situations") || !json["situations"].is_array()) {
+            throw std::runtime_error("unsupported wig situation document");
+        }
         std::unordered_map<RE::FormID, WigSituationalAssignment> parsed;
-
-        try {
-            std::ifstream file(path);
-            auto json = nlohmann::json::parse(file);
-
-            if (!json.contains("situations")) {
-                logger::warn("Wig situations file missing 'situations' key");
-                return;
+        auto retained = nlohmann::json::array();
+        const auto readWig = [](const nlohmann::json& obj) -> WigEntry {
+            if (obj.is_null()) return {};
+            WigEntry wig{Tailor::Persistence::ReadLocalFormID(obj.at("localId").get<std::string>()),
+                obj.at("plugin").get<std::string>(), obj.value("name", "")};
+            if (wig.plugin.empty()) throw std::runtime_error("missing wig plugin");
+            if (const auto* armor = wig.Resolve()) wig.name = SanitizeUtf8(armor->GetName());
+            return wig;  // Missing armor is dormant, not an instruction to clear this slot.
+        };
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& entry : json["situations"]) {
+            ++row;
+            try {
+                const auto localId = Tailor::Persistence::ReadLocalFormID(entry.at("actorLocalId").get<std::string>());
+                const auto runtimeId = Tailor::Persistence::ActorRuntimeID(localId, entry.at("actorPlugin").get<std::string>());
+                if (runtimeId == Tailor::Player::kPlayerRef) continue;
+                WigSituationalAssignment state;
+                if (entry.contains("adventuring")) state.adventuring = readWig(entry["adventuring"]);
+                if (entry.contains("town")) state.town = readWig(entry["town"]);
+                if (entry.contains("home")) state.home = readWig(entry["home"]);
+                if (entry.contains("sleep")) state.sleep = readWig(entry["sleep"]);
+                if (!runtimeId) { retained.push_back(entry); continue; }
+                if (state.HasAnySituation()) {
+                    if (!parsed.emplace(runtimeId, std::move(state)).second) throw std::runtime_error("duplicate wig situation assignment");
+                }
+            } catch (const std::exception& e) {
+                complete = false;
+                logger::error("Wig situations: row {} could not load; other rows remain active, file preserved and saves disabled: {}", row, e.what());
             }
-
-            auto* dataHandler = RE::TESDataHandler::GetSingleton();
-            if (!dataHandler) {
-                logger::error("TESDataHandler not available during wig situations load");
-                return;
-            }
-
-            auto resolveWigEntry = [&](const nlohmann::json& obj) -> WigEntry {
-                WigEntry wig;
-                if (obj.is_null() || !obj.contains("plugin") || !obj.contains("localId")) {
-                    return wig;
-                }
-                wig.formId = std::stoul(obj["localId"].get<std::string>(), nullptr, 16);
-                wig.plugin = obj["plugin"].get<std::string>();
-                wig.name = obj.value("name", "");
-
-                auto* armor = wig.Resolve();
-                if (!armor) {
-                    logger::warn("Wig situations: wig '{}' from '{}' not found, pruning",
-                        wig.name, wig.plugin);
-                    return {};
-                }
-                wig.name = SanitizeUtf8(armor->GetName());
-                return wig;
-            };
-
-            for (auto& entry : json["situations"]) {
-                auto actorLocalId = std::stoul(entry["actorLocalId"].get<std::string>(), nullptr, 16);
-                auto actorPlugin = entry["actorPlugin"].get<std::string>();
-
-                auto* actorForm = dataHandler->LookupForm(actorLocalId, actorPlugin);
-                if (!actorForm) {
-                    logger::warn("Wig situations: pruning actor 0x{:06X} from '{}'",
-                        actorLocalId, actorPlugin);
-                    prunedCount++;
-                    continue;
-                }
-
-                WigSituationalAssignment wsa;
-                if (entry.contains("adventuring")) wsa.adventuring = resolveWigEntry(entry["adventuring"]);
-                if (entry.contains("town"))        wsa.town = resolveWigEntry(entry["town"]);
-                if (entry.contains("home"))        wsa.home = resolveWigEntry(entry["home"]);
-                if (entry.contains("sleep"))       wsa.sleep = resolveWigEntry(entry["sleep"]);
-
-                if (wsa.HasAnySituation()) {
-                    parsed[actorForm->GetFormID()] = std::move(wsa);
-                }
-            }
-
-            logger::info("Loaded {} wig situational assignments from {}", parsed.size(), path.string());
         }
-        catch (const std::exception& e) {
-            logger::error("Failed to load wig situations: {}", e.what());
-            return;  // keep existing _situations intact
-        }
-
-        // Success — swap into live map
-        std::lock_guard lock(_mutex);
         _situations = std::move(parsed);
-    }
-
-    if (prunedCount > 0) {
-        logger::info("Pruned {} stale wig situation(s) — saving cleaned file", prunedCount);
-        SaveSituations();
+        _retainedSituations = std::move(retained);
+        _saveSituationsAllowed = complete;
+        logger::info("Loaded {} wig situations, retained {} dormant row(s)", _situations.size(), _retainedSituations.size());
+    } catch (const std::exception& e) {
+        logger::error("Failed to load wig situations; file preserved and saves disabled: {}", e.what());
     }
 }
 
 void WigAssignments::SaveSituations() const
 {
     std::lock_guard lock(_mutex);
+    if (!_saveSituationsAllowed) {
+        logger::error("Wig situations: save skipped because the file was not loaded successfully");
+        return;
+    }
 
     nlohmann::json json;
     json["version"] = 1;
-    json["situations"] = nlohmann::json::array();
+    json["situations"] = _retainedSituations;
 
     auto serializeWig = [](const WigEntry& wig) -> nlohmann::json {
         if (wig.formId == 0 || wig.plugin.empty()) return nullptr;
@@ -432,13 +427,17 @@ void WigAssignments::SaveSituations() const
     if (!dataHandler) return;
 
     for (auto& [actorRuntimeId, wsa] : _situations) {
-        auto* actorForm = RE::TESForm::LookupByID(actorRuntimeId);
-        if (!actorForm) continue;
+        // The player's data belongs to each save's co-save, never this shared file.
+        if (actorRuntimeId == Tailor::Player::kPlayerRef) continue;
 
         uint8_t modIndex = (actorRuntimeId >> 24) & 0xFF;
         const RE::TESFile* sourceFile = nullptr;
         RE::FormID localFormId = 0;
 
+        if (modIndex == 0xFF) {
+            logger::warn("Wig assignments: runtime actor 0x{:X} has no persistent plugin identity", actorRuntimeId);
+            continue;
+        }
         if (modIndex != 0xFE) {
             sourceFile = dataHandler->LookupLoadedModByIndex(modIndex);
             localFormId = actorRuntimeId & 0x00FFFFFF;
@@ -448,7 +447,10 @@ void WigAssignments::SaveSituations() const
             localFormId = actorRuntimeId & 0x00000FFF;
         }
 
-        if (!sourceFile) continue;
+        if (!sourceFile) {
+            logger::error("Wig situations: save cancelled; could not resolve plugin for actor 0x{:08X}", actorRuntimeId);
+            return;
+        }
 
         nlohmann::json entry;
         entry["actorLocalId"] = std::format("0x{:06X}", localFormId);
@@ -469,13 +471,12 @@ void WigAssignments::SaveSituations() const
 
     try {
         auto path = GetSituationsPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("Failed to open wig situations file for writing: {}", path.string());
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("Failed to save wig situations to {}: {}", path.string(), error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("Saved {} wig situational assignments to {}", json["situations"].size(), path.string());
     }
     catch (const std::exception& e) {
@@ -488,11 +489,12 @@ void WigAssignments::AssignSituation(RE::FormID actorFormId, OutfitSituation sit
     std::lock_guard lock(_mutex);
     _situations[actorFormId].SetSlot(situation, wig);
 
-    // Clear legacy single-wig assignment (migrating to situational mode)
+    // Clear legacy single-wig assignment (migrating to situational mode). The assigned wig stays:
+    // situation wigs change only the worn wig.
     auto it = _assignments.find(actorFormId);
     if (it != _assignments.end()) {
         it->second.currentWig = WigEntry{};
-        if (!it->second.HasHairColor()) {
+        if (it->second.IsEmpty()) {
             _assignments.erase(it);
         }
     }
@@ -547,4 +549,30 @@ std::unordered_map<RE::FormID, WigSituationalAssignment> WigAssignments::GetAllS
 {
     std::lock_guard lock(_mutex);
     return _situations;
+}
+
+PlayerWigRow WigAssignments::ExportPlayer() const
+{
+    std::lock_guard lock(_mutex);
+    PlayerWigRow row;
+    if (const auto it = _assignments.find(Tailor::Player::kPlayerRef); it != _assignments.end()) row.state = it->second;
+    if (const auto it = _situations.find(Tailor::Player::kPlayerRef); it != _situations.end() && it->second.HasAnySituation()) {
+        row.situations = it->second;
+    }
+    return row;
+}
+
+void WigAssignments::ImportPlayer(const PlayerWigRow& row)
+{
+    std::lock_guard lock(_mutex);
+    if (row.state && !row.state->IsEmpty()) {
+        _assignments[Tailor::Player::kPlayerRef] = *row.state;
+    } else {
+        _assignments.erase(Tailor::Player::kPlayerRef);
+    }
+    if (row.situations && row.situations->HasAnySituation()) {
+        _situations[Tailor::Player::kPlayerRef] = *row.situations;
+    } else {
+        _situations.erase(Tailor::Player::kPlayerRef);
+    }
 }

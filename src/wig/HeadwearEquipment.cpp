@@ -72,18 +72,23 @@ namespace Tailor::Wigs
             (RenderedHeadSlots(actor, wig) & modelSlots) != 0;
     }
 
-    bool OutfitHidesWig(RE::Actor* actor, RE::TESObjectARMO* wig, RE::TESObjectARMO* previousWig)
+    bool OutfitHidesWig(RE::Actor* actor, RE::TESObjectARMO* wig, RE::TESObjectARMO* previousWig,
+        const std::vector<RE::TESObjectARMO*>& notHeadgear)
     {
         if (!actor || !wig) return false;
         for (const auto& item : WornArmor(actor)) {
-            if (item.armor != previousWig && HeadwearConflicts(actor, wig, item.armor)) return true;
+            if (item.armor == previousWig || std::find(notHeadgear.begin(), notHeadgear.end(), item.armor) != notHeadgear.end()) continue;
+            if (HeadwearConflicts(actor, wig, item.armor)) return true;
         }
         // Include the intended NPC outfit even if its helmet was rejected by a
         // legacy protected wig or its queued equip has not run yet.
         auto* npc = actor->GetActorBase();
         if (!actor->IsPlayerRef() && npc && npc->defaultOutfit) {
             for (auto* item : npc->defaultOutfit->outfitItems) {
-                if (item && HeadwearConflicts(actor, wig, item->As<RE::TESObjectARMO>())) return true;
+                if (!item) continue;
+                auto* armor = item->As<RE::TESObjectARMO>();
+                if (armor && std::find(notHeadgear.begin(), notHeadgear.end(), armor) != notHeadgear.end()) continue;
+                if (HeadwearConflicts(actor, wig, armor)) return true;
             }
         }
         return false;
@@ -106,7 +111,8 @@ namespace Tailor::Wigs
             if (std::any_of(remaining.begin(), remaining.end(), [&](const auto& item) { return item.armor == wig && item.extra == it->extra; })) break;
         }
         logger::warn("Headwear: could not suspend wig {:08X} on {:08X}", wig->GetFormID(), actor->GetFormID());
-        EquipProtectedWig(actor, wig);
+        // The player's wig is never locked: they may take it off themselves.
+        if (!actor->IsPlayerRef()) EquipProtectedWig(actor, wig);
         return false;
     }
 
@@ -159,5 +165,54 @@ namespace Tailor::Wigs
         }
         _displaced = std::move(pending);
         return _displaced.empty();
+    }
+
+    std::vector<HeadwearCopy> TakeOffHeadwear(RE::Actor* actor, const std::function<bool(RE::TESObjectARMO*)>& takeOff)
+    {
+        std::vector<HeadwearCopy> taken;
+        auto* manager = RE::ActorEquipManager::GetSingleton();
+        auto* inventory = actor ? actor->GetInventoryChanges() : nullptr;
+        if (!manager || !inventory) return taken;
+        // Identify every copy before the first native call, as HeadwearPreview::Hide does.
+        std::vector<HeadwearCopy> pending;
+        for (const auto& item : WornArmor(actor)) {
+            // Protected first: Tailor's NPC wigs carry ExtraCannotWear, so the rule never runs for them.
+            if (item.extra->HasType<RE::ExtraCannotWear>() || !takeOff(item.armor)) continue;
+            auto* id = item.extra->GetByType<RE::ExtraUniqueID>();
+            if (!id) {
+                id = new RE::ExtraUniqueID(actor->GetFormID(), inventory->GetNextUniqueID());
+                item.extra->Add(id);
+                actor->AddChange(RE::TESObjectREFR::ChangeFlags::kInventory);
+            }
+            pending.push_back({item.armor->GetFormID(), id->baseID, id->uniqueID});
+        }
+        for (const auto& key : pending) {
+            auto item = Find(actor, key);
+            if (!item.extra || !item.extra->GetWorn()) continue;
+            manager->UnequipObject(actor, item.armor, item.extra, 1, nullptr, false, false, false, true);
+            item = Find(actor, key);
+            if (item.extra && !item.extra->GetWorn()) taken.push_back(key);
+        }
+        return taken;
+    }
+
+    Tailor::Situations::CopyState HeadwearCopyState(RE::Actor* actor, const HeadwearCopy& copy)
+    {
+        const auto item = Find(actor, copy);
+        if (!item.extra) return Tailor::Situations::CopyState::Gone;
+        return item.extra->GetWorn() ? Tailor::Situations::CopyState::Worn : Tailor::Situations::CopyState::Off;
+    }
+
+    PutBack PutHeadwearBack(RE::Actor* actor, const HeadwearCopy& copy)
+    {
+        auto* manager = RE::ActorEquipManager::GetSingleton();
+        if (!actor || !manager) return PutBack::Failed;
+        auto item = Find(actor, copy);
+        if (!item.extra) return PutBack::Gone;
+        if (!item.extra->GetWorn()) {
+            manager->EquipObject(actor, item.armor, item.extra, 1, nullptr, false, false, false, true);
+            item = Find(actor, copy);
+        }
+        return item.extra && item.extra->GetWorn() ? PutBack::Worn : PutBack::Failed;
     }
 }

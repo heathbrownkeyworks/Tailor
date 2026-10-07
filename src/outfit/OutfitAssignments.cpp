@@ -1,4 +1,7 @@
 #include "outfit/OutfitAssignments.h"
+#include "player/PlayerIds.h"
+#include "persistence/AssignmentIdentity.h"
+#include "persistence/JsonFile.h"
 
 namespace
 {
@@ -61,35 +64,32 @@ std::filesystem::path OutfitAssignments::GetFilePath() const
 
 void OutfitAssignments::Load()
 {
-    bool needsPrune = false;
-
-    {
-        std::lock_guard lock(_mutex);
-        _assignments.clear();
-
-        auto path = GetFilePath();
+    std::lock_guard lock(_mutex);
+    _saveAllowed = false;
+    try {
+        const auto path = GetFilePath();
         if (!std::filesystem::exists(path)) {
+            _assignments.clear();
+            _retainedEntries = nlohmann::json::array();
+            _saveAllowed = true;
             logger::info("OutfitAssignments: no assignments.json found, starting empty");
             return;
         }
-
-        auto* dataHandler = RE::TESDataHandler::GetSingleton();
-        if (!dataHandler) {
-            logger::error("OutfitAssignments: no TESDataHandler");
-            return;
+        std::ifstream file(path);
+        const auto json = nlohmann::json::parse(file);
+        const int schemaVersion = json.value("version", 1);
+        if (schemaVersion < 1 || schemaVersion > 3 || !json.contains("assignments") || !json["assignments"].is_array()) {
+            throw std::runtime_error("unsupported assignment document");
         }
-
-        try {
-            std::ifstream file(path);
-            auto json = nlohmann::json::parse(file);
-            const int schemaVersion = json.value("version", 1);
-
-            if (!json.contains("assignments") || !json["assignments"].is_array()) {
-                return;
-            }
-
-            for (auto& entry : json["assignments"]) {
-                // Parse actor identity (local FormID + plugin)
+        std::unordered_map<RE::FormID, SituationalAssignment> parsed;
+        auto retained = nlohmann::json::array();
+        // A bad row must not disable situations for every other NPC at startup.
+        // Keep valid rows usable, but never overwrite an incompletely read file.
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& entry : json["assignments"]) {
+            ++row;
+            try {
                 std::string actorFormStr = entry.value("actorFormId", std::string{});
                 std::string actorPlugin = entry.value("actorPlugin", std::string{});
                 int outfitId = entry.value("outfitId", 0);
@@ -97,45 +97,34 @@ void OutfitAssignments::Load()
                 int townId = entry.value("townId", 0);
                 int homeId = entry.value("homeId", 0);
                 int sleepId = entry.value("sleepId", 0);
+                int swimmingId = entry.value("swimmingId", 0);
+                int warmId = entry.value("warmId", 0);
                 bool adventuringRandom = entry.value("adventuringRandom", false);
                 bool townRandom = entry.value("townRandom", false);
                 bool homeRandom = entry.value("homeRandom", false);
                 bool sleepRandom = entry.value("sleepRandom", false);
+                bool swimmingRandom = entry.value("swimmingRandom", false);
+                bool warmRandom = entry.value("warmRandom", false);
                 const auto armorType = entry.contains("adventuringArmorType") && entry["adventuringArmorType"].is_string()
                     ? ParseOutfitArmorType(entry["adventuringArmorType"].get<std::string>()) : OutfitArmorType::Any;
-
-                if (actorFormStr.empty() || actorPlugin.empty()) {
-                    needsPrune = true;
-                    continue;
-                }
-                if (outfitId <= 0 && adventuringId <= 0 && townId <= 0 && homeId <= 0 && sleepId <= 0
-                    && !adventuringRandom && !townRandom && !homeRandom && !sleepRandom
-                    && armorType == OutfitArmorType::Any) {
-                    needsPrune = true;
-                    continue;
-                }
-
-                RE::FormID localFormId = static_cast<RE::FormID>(std::stoul(actorFormStr, nullptr, 16));
-
-                // Resolve to runtime FormID
-                auto* form = dataHandler->LookupForm(localFormId, actorPlugin);
-                if (!form) {
-                    logger::warn("OutfitAssignments: actor 0x{:X} from '{}' not found, pruning",
-                        localFormId, actorPlugin);
-                    needsPrune = true;
-                    continue;
-                }
-
+                const auto localFormId = Tailor::Persistence::ReadLocalFormID(actorFormStr);
+                const auto runtimeId = Tailor::Persistence::ActorRuntimeID(localFormId, actorPlugin);
+                // The player's row belongs to each save's co-save.
+                if (runtimeId == Tailor::Player::kPlayerRef) continue;
                 SituationalAssignment sa;
                 sa.outfitId = outfitId;
                 sa.adventuringId = adventuringId;
                 sa.townId = townId;
                 sa.homeId = homeId;
                 sa.sleepId = sleepId;
+                sa.swimmingId = swimmingId;
+                sa.warmId = warmId;
                 sa.adventuringRandom = adventuringRandom;
                 sa.townRandom = townRandom;
                 sa.homeRandom = homeRandom;
                 sa.sleepRandom = sleepRandom;
+                sa.swimmingRandom = swimmingRandom;
+                sa.warmRandom = warmRandom;
                 sa.adventuringArmorType = armorType;
                 sa.originalOutfitPlugin = entry.value("originalOutfitPlugin", std::string{});
                 sa.originalOutfitLocalId = entry.value("originalOutfitLocalId", std::string{});
@@ -161,54 +150,63 @@ void OutfitAssignments::Load()
                 }
                 sa.originalDefaultOutfitHadChange = entry.value("originalDefaultOutfitHadChange", false);
                 sa.originalSleepOutfitHadChange = entry.value("originalSleepOutfitHadChange", false);
-                _assignments[form->GetFormID()] = sa;
-
-                if (outfitId > 0) {
-                    logger::info("OutfitAssignments: loaded actor 0x{:X} from '{}' (runtime 0x{:X}) — outfit={}",
-                        localFormId, actorPlugin, form->GetFormID(), outfitId);
-                } else {
-                    logger::info("OutfitAssignments: loaded actor 0x{:X} from '{}' (runtime 0x{:X}) — adv={} town={} home={} sleep={}",
-                        localFormId, actorPlugin, form->GetFormID(),
-                        adventuringId, townId, homeId, sleepId);
+                sa.restoreDefaultPending = entry.value("restoreDefaultPending", false);
+                if (!runtimeId) {
+                    auto dormant = entry;
+                    // The output document is v3 even when this row came from v1/v2.
+                    dormant["originalDefaultOutfitKnown"] = sa.originalDefaultOutfitKnown;
+                    dormant["originalSleepOutfitKnown"] = sa.originalSleepOutfitKnown;
+                    dormant["originalDefaultChangeStateKnown"] = sa.originalDefaultChangeStateKnown;
+                    dormant["originalSleepChangeStateKnown"] = sa.originalSleepChangeStateKnown;
+                    retained.push_back(std::move(dormant));
+                    logger::warn("OutfitAssignments: retaining actor {} because plugin '{}' is unavailable", actorFormStr, actorPlugin);
+                    continue;
                 }
+                if (!parsed.emplace(runtimeId, std::move(sa)).second) throw std::runtime_error("duplicate actor assignment");
+            } catch (const std::exception& e) {
+                complete = false;
+                logger::error("OutfitAssignments: row {} could not load; other rows remain active, file preserved and saves disabled: {}", row, e.what());
             }
-
-            logger::info(
-                "OutfitAssignments: loaded {} assignment(s) (schema v{})",
-                _assignments.size(), schemaVersion);
-        } catch (const std::exception& e) {
-            logger::error("OutfitAssignments: failed to load: {}", e.what());
         }
-    }  // mutex released here
-
-    // Prune outside the lock to avoid deadlock
-    if (needsPrune) {
-        Save();
+        _assignments = std::move(parsed);
+        _retainedEntries = std::move(retained);
+        _saveAllowed = complete;
+        logger::info("OutfitAssignments: loaded {} assignment(s), retained {} dormant row(s) (schema v{})",
+            _assignments.size(), _retainedEntries.size(), schemaVersion);
+    } catch (const std::exception& e) {
+        logger::error("OutfitAssignments: failed to load; file preserved and saves disabled: {}", e.what());
     }
 }
 
 void OutfitAssignments::Save() const
 {
     std::lock_guard lock(_mutex);
+    if (!_saveAllowed) {
+        logger::error("OutfitAssignments: save skipped because the file was not loaded successfully");
+        return;
+    }
 
     auto* dataHandler = RE::TESDataHandler::GetSingleton();
     if (!dataHandler) return;
 
     nlohmann::json json;
     json["version"] = 3;
-    json["assignments"] = nlohmann::json::array();
+    json["assignments"] = _retainedEntries;
 
     for (auto& [runtimeId, sa] : _assignments) {
+        // The player's row is saved with each game, in the co-save.
+        if (runtimeId == Tailor::Player::kPlayerRef) continue;
         if (!sa.HasSettings()) continue;
-
-        auto* form = RE::TESForm::LookupByID(runtimeId);
-        if (!form) continue;
 
         // Decompose runtime FormID to get the correct source plugin
         uint8_t modIndex = (runtimeId >> 24) & 0xFF;
         const RE::TESFile* sourceFile = nullptr;
         RE::FormID localFormId = 0;
 
+        if (modIndex == 0xFF) {
+            logger::warn("OutfitAssignments: runtime actor 0x{:X} has no persistent plugin identity", runtimeId);
+            continue;
+        }
         if (modIndex != 0xFE) {
             // Regular plugin
             sourceFile = dataHandler->LookupLoadedModByIndex(modIndex);
@@ -221,8 +219,8 @@ void OutfitAssignments::Save() const
         }
 
         if (!sourceFile) {
-            logger::warn("OutfitAssignments: could not resolve plugin for runtime 0x{:X}", runtimeId);
-            continue;
+            logger::error("OutfitAssignments: save cancelled; could not resolve plugin for runtime 0x{:X}", runtimeId);
+            return;
         }
 
         std::string plugin(sourceFile->GetFilename());
@@ -235,10 +233,14 @@ void OutfitAssignments::Save() const
         if (sa.townId > 0) entry["townId"] = sa.townId;
         if (sa.homeId > 0) entry["homeId"] = sa.homeId;
         if (sa.sleepId > 0) entry["sleepId"] = sa.sleepId;
+        if (sa.swimmingId > 0) entry["swimmingId"] = sa.swimmingId;
+        if (sa.warmId > 0) entry["warmId"] = sa.warmId;
         if (sa.adventuringRandom) entry["adventuringRandom"] = true;
         if (sa.townRandom) entry["townRandom"] = true;
         if (sa.homeRandom) entry["homeRandom"] = true;
         if (sa.sleepRandom) entry["sleepRandom"] = true;
+        if (sa.swimmingRandom) entry["swimmingRandom"] = true;
+        if (sa.warmRandom) entry["warmRandom"] = true;
         if (sa.adventuringArmorType != OutfitArmorType::Any) {
             entry["adventuringArmorType"] = OutfitArmorTypeName(sa.adventuringArmorType);
         }
@@ -246,6 +248,7 @@ void OutfitAssignments::Save() const
         if (!sa.originalOutfitLocalId.empty()) entry["originalOutfitLocalId"] = sa.originalOutfitLocalId;
         if (!sa.originalSleepOutfitPlugin.empty()) entry["originalSleepOutfitPlugin"] = sa.originalSleepOutfitPlugin;
         if (!sa.originalSleepOutfitLocalId.empty()) entry["originalSleepOutfitLocalId"] = sa.originalSleepOutfitLocalId;
+        if (sa.restoreDefaultPending) entry["restoreDefaultPending"] = true;
         if (sa.originalDefaultOutfitKnown) entry["originalDefaultOutfitKnown"] = true;
         if (sa.originalSleepOutfitKnown) entry["originalSleepOutfitKnown"] = true;
         if (sa.originalDefaultChangeStateKnown) {
@@ -264,23 +267,29 @@ void OutfitAssignments::Save() const
 
     try {
         auto path = GetFilePath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("OutfitAssignments: failed to open assignments.json for writing");
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("OutfitAssignments: failed to save assignments.json: {}", error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
-        logger::info("OutfitAssignments: saved {} assignment(s)", _assignments.size());
+        logger::info("OutfitAssignments: saved {} assignment row(s), including {} dormant", json["assignments"].size(), _retainedEntries.size());
     } catch (const std::exception& e) {
         logger::error("OutfitAssignments: failed to save: {}", e.what());
     }
+}
+
+bool OutfitAssignments::SaveAllowed() const
+{
+    std::lock_guard lock(_mutex);
+    return _saveAllowed;
 }
 
 void OutfitAssignments::Assign(RE::FormID actorRuntimeId, int outfitId)
 {
     std::lock_guard lock(_mutex);
     _assignments[actorRuntimeId].outfitId = outfitId;
+    _assignments[actorRuntimeId].restoreDefaultPending = false;
     logger::info("OutfitAssignments: assigned outfit {} to actor 0x{:X}", outfitId, actorRuntimeId);
 }
 
@@ -316,8 +325,30 @@ std::unordered_map<RE::FormID, SituationalAssignment> OutfitAssignments::GetAll(
 {
     std::lock_guard lock(_mutex);
     auto active = _assignments;
-    std::erase_if(active, [](const auto& entry) { return !entry.second.HasOutfits(); });
+    // NPC batches (load re-apply, OBody presets, situation polls) never take the player.
+    std::erase_if(active, [](const auto& entry) {
+        return entry.first == Tailor::Player::kPlayerRef ||
+            (!entry.second.HasOutfits() && !entry.second.restoreDefaultPending);
+    });
     return active;
+}
+
+std::optional<SituationalAssignment> OutfitAssignments::ExportPlayer() const
+{
+    std::lock_guard lock(_mutex);
+    const auto it = _assignments.find(Tailor::Player::kPlayerRef);
+    if (it == _assignments.end() || !it->second.HasSettings()) return std::nullopt;
+    return it->second;
+}
+
+void OutfitAssignments::ImportPlayer(const std::optional<SituationalAssignment>& assignment)
+{
+    std::lock_guard lock(_mutex);
+    if (assignment && assignment->HasSettings()) {
+        _assignments[Tailor::Player::kPlayerRef] = *assignment;
+    } else {
+        _assignments.erase(Tailor::Player::kPlayerRef);
+    }
 }
 
 void OutfitAssignments::AssignSituation(RE::FormID actorRuntimeId, OutfitSituation situation, int outfitId)
@@ -325,6 +356,7 @@ void OutfitAssignments::AssignSituation(RE::FormID actorRuntimeId, OutfitSituati
     std::lock_guard lock(_mutex);
     auto& a = _assignments[actorRuntimeId];
     a.SetSlot(situation, outfitId);
+    a.restoreDefaultPending = false;
     logger::info("OutfitAssignments: assigned situation {} outfit {} to actor 0x{:X}",
         static_cast<int>(situation), outfitId, actorRuntimeId);
 }
@@ -413,24 +445,37 @@ std::vector<RE::FormID> OutfitAssignments::GetActorsUsingOutfit(int outfitId) co
             sa.adventuringId == outfitId ||
             sa.townId == outfitId ||
             sa.homeId == outfitId ||
-            sa.sleepId == outfitId) {
+            sa.sleepId == outfitId || sa.swimmingId == outfitId || sa.warmId == outfitId) {
             result.push_back(actorId);
         }
     }
     return result;
 }
 
-void OutfitAssignments::RemoveOutfitFromAllAssignments(int outfitId)
+void OutfitAssignments::RemoveOutfitFromAllAssignments(int outfitId, const std::vector<RE::FormID>& restoreLater)
 {
     {
         std::lock_guard lock(_mutex);
+        for (auto& row : _retainedEntries) {
+            bool removed = false;
+            bool remaining = false;
+            for (const auto* slot : {"outfitId", "adventuringId", "townId", "homeId", "sleepId", "swimmingId", "warmId"}) {
+                if (row.value(slot, 0) == outfitId) { row[slot] = 0; removed = true; }
+                remaining = remaining || row.value(slot, 0) > 0;
+            }
+            for (const auto* flag : {"adventuringRandom", "townRandom", "homeRandom", "sleepRandom", "swimmingRandom", "warmRandom"}) {
+                remaining = remaining || row.value(flag, false);
+            }
+            if (removed && !remaining) row["restoreDefaultPending"] = true;
+        }
         for (auto it = _assignments.begin(); it != _assignments.end(); ) {
             auto& sa = it->second;
-            if (sa.outfitId == outfitId) sa.outfitId = 0;
-            if (sa.adventuringId == outfitId) sa.adventuringId = 0;
-            if (sa.townId == outfitId) sa.townId = 0;
-            if (sa.homeId == outfitId) sa.homeId = 0;
-            if (sa.sleepId == outfitId) sa.sleepId = 0;
+            const bool hadOutfits = sa.HasOutfits();
+            sa.RemoveOutfit(outfitId);
+            if (hadOutfits && !sa.HasOutfits() &&
+                std::find(restoreLater.begin(), restoreLater.end(), it->first) != restoreLater.end()) {
+                sa.restoreDefaultPending = true;
+            }
 
             if (!sa.HasSettings()) {
                 it = _assignments.erase(it);
@@ -441,6 +486,22 @@ void OutfitAssignments::RemoveOutfitFromAllAssignments(int outfitId)
     }
     Save();
     logger::info("OutfitAssignments: removed outfit {} from all assignments", outfitId);
+}
+
+bool OutfitAssignments::IsRestoreDefaultPending(RE::FormID actorRuntimeId) const
+{
+    std::lock_guard lock(_mutex);
+    const auto it = _assignments.find(actorRuntimeId);
+    return it != _assignments.end() && it->second.restoreDefaultPending;
+}
+
+void OutfitAssignments::ClearRestoreDefaultPending(RE::FormID actorRuntimeId)
+{
+    std::lock_guard lock(_mutex);
+    const auto it = _assignments.find(actorRuntimeId);
+    if (it == _assignments.end()) return;
+    it->second.restoreDefaultPending = false;
+    if (!it->second.HasSettings()) _assignments.erase(it);
 }
 
 bool OutfitAssignments::CaptureOriginalOutfitState(
@@ -541,6 +602,51 @@ bool OutfitAssignments::CaptureMissingOriginalOutfitState(
             assignment.originalSleepOutfitKnown,
             assignment.originalDefaultChangeStateKnown,
             assignment.originalSleepChangeStateKnown);
+    }
+    return changed;
+}
+
+bool OutfitAssignments::SetOriginalOutfitState(
+    RE::FormID actorRuntimeId,
+    RE::BGSOutfit* defaultOutfit,
+    RE::BGSOutfit* sleepOutfit,
+    bool defaultOutfitHadChange,
+    bool sleepOutfitHadChange)
+{
+    std::lock_guard lock(_mutex);
+    auto it = _assignments.find(actorRuntimeId);
+    if (it == _assignments.end()) return false;
+
+    // Build the replacement aside so an outfit that cannot be encoded changes nothing.
+    auto updated = it->second;
+    updated.originalOutfitPlugin.clear();
+    updated.originalOutfitLocalId.clear();
+    updated.originalSleepOutfitPlugin.clear();
+    updated.originalSleepOutfitLocalId.clear();
+    if (defaultOutfit && !EncodeOutfit(defaultOutfit, updated.originalOutfitPlugin, updated.originalOutfitLocalId)) return false;
+    if (sleepOutfit && !EncodeOutfit(sleepOutfit, updated.originalSleepOutfitPlugin, updated.originalSleepOutfitLocalId)) return false;
+    updated.originalDefaultOutfitKnown = updated.originalSleepOutfitKnown = true;
+    updated.originalDefaultChangeStateKnown = updated.originalSleepChangeStateKnown = true;
+    updated.originalDefaultOutfitHadChange = defaultOutfitHadChange;
+    updated.originalSleepOutfitHadChange = sleepOutfitHadChange;
+
+    const auto& stored = it->second;
+    const bool changed =
+        stored.originalOutfitPlugin != updated.originalOutfitPlugin ||
+        stored.originalOutfitLocalId != updated.originalOutfitLocalId ||
+        stored.originalSleepOutfitPlugin != updated.originalSleepOutfitPlugin ||
+        stored.originalSleepOutfitLocalId != updated.originalSleepOutfitLocalId ||
+        !stored.originalDefaultOutfitKnown || !stored.originalSleepOutfitKnown ||
+        !stored.originalDefaultChangeStateKnown || !stored.originalSleepChangeStateKnown ||
+        stored.originalDefaultOutfitHadChange != defaultOutfitHadChange ||
+        stored.originalSleepOutfitHadChange != sleepOutfitHadChange;
+    if (changed) {
+        logger::info(
+            "OutfitAssignments: original outfit for actor 0x{:X} is {}:{} from the NPC's own plugin record (was {}:{})",
+            actorRuntimeId,
+            updated.originalOutfitPlugin.empty() ? "none" : updated.originalOutfitPlugin, updated.originalOutfitLocalId,
+            stored.originalOutfitPlugin.empty() ? "none" : stored.originalOutfitPlugin, stored.originalOutfitLocalId);
+        it->second = std::move(updated);
     }
     return changed;
 }

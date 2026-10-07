@@ -1,5 +1,7 @@
 #include "events/CellHandler.h"
+#include "api/ModOverrides.h"
 #include "events/SituationHandler.h"
+#include "outfit/Children.h"
 #include "outfit/OutfitAssignments.h"
 #include "outfit/OutfitManager.h"
 #include "outfit/OutfitStore.h"
@@ -59,8 +61,46 @@ namespace
 
     bool DoOutfitReEquip(RE::Actor* actor, int32_t attempt)
     {
+        // An NPC in an open editor is redressed by the editor when it closes.
+        if (OutfitManager::GetSingleton().IsCreateSessionActor(actor)) return true;
+        // Tailor never dresses a child; one an earlier build dressed gets their own outfit and hair back.
+        if (Tailor::Children::Skip(actor)) return true;
+
         auto& assignments = OutfitAssignments::GetSingleton();
         auto actorId = actor->GetFormID();
+
+        // A mod's override dresses them, managed or not: the situation flow asks it first.
+        if (ModOverrides::GetSingleton().Contains(actorId)) {
+            SituationHandler::GetSingleton()->ApplyForSituation(actor);
+            return true;
+        }
+
+        // Her last outfit was deleted. A new assignment since then supersedes
+        // this, and clears the mark itself.
+        if (assignments.IsRestoreDefaultPending(actorId)) {
+            if (!OutfitManager::GetSingleton().RestoreOriginalOutfit(actor, true)) return false;
+            assignments.ClearRestoreDefaultPending(actorId);
+            assignments.Save();
+            SituationHandler::GetSingleton()->ClearOutfitOverrides(actorId);
+            OutfitManager::NotifyOutfitChanged(actor);
+            logger::info("CellHandler: returned {} to the Default Outfit after her last outfit was deleted (attempt {})",
+                actor->GetDisplayFullName(), attempt);
+            return true;
+        }
+
+        // A mod's override let her go when its outfit was deleted, and Tailor keeps no outfit of hers: her own
+        // outfit comes back, retried until it does. An outfit given to her since supersedes this.
+        if (OutfitManager::GetSingleton().IsReturningToOwnOutfit(actorId)) {
+            if (!assignments.HasAssignment(actorId)) {
+                if (!OutfitManager::GetSingleton().RestoreOriginalOutfit(actor, true)) return false;
+                OutfitManager::GetSingleton().ForgetReturnToOwnOutfit(actorId);
+                OutfitManager::NotifyOutfitChanged(actor);
+                logger::info("CellHandler: gave {} her own outfit back after her override's outfit was deleted (attempt {})",
+                    actor->GetDisplayFullName(), attempt);
+                return true;
+            }
+            OutfitManager::GetSingleton().ForgetReturnToOwnOutfit(actorId);
+        }
 
         if (assignments.HasAnySituation(actorId)) {
             SituationHandler::GetSingleton()->ApplyForSituation(actor);
@@ -75,6 +115,15 @@ namespace
         auto* outfit = OutfitStore::GetSingleton().GetOutfitById(outfitId);
         if (!outfit) {
             logger::warn("CellHandler: outfit id {} not found for {}", outfitId, actor->GetDisplayFullName());
+            return true;
+        }
+
+        // Still assigned, but tagged for the other sex: the Default Outfit until it fits again.
+        if (!OutfitFits(outfit->sex, OutfitManager::GetNpcSex(actor))) {
+            if (!OutfitManager::GetSingleton().RestoreOriginalOutfit(actor, true)) return false;
+            OutfitManager::NotifyOutfitChanged(actor);
+            logger::info("CellHandler: outfit '{}' does not fit {}; kept the Default Outfit (attempt {})",
+                outfit->name, actor->GetDisplayFullName(), attempt);
             return true;
         }
 
@@ -152,6 +201,9 @@ namespace
 
     void DoWigReEquip(RE::Actor* actor, int32_t attempt)
     {
+        if (!WigManager::GetSingleton().RestorePendingHeadwear(actor)) return;
+        // Tailor never puts a wig on a child.
+        if (Tailor::Children::Skip(actor)) return;
         auto actorId = actor->GetFormID();
 
         // Situational wig branch
@@ -322,7 +374,9 @@ RE::BSEventNotifyControl CellHandler::ProcessEvent(
     // Cell attach — re-equip outfit if assigned (staggered to avoid SKEE morph memory burst)
     auto& outfitAssignments = OutfitAssignments::GetSingleton();
     auto actorId = actor->GetFormID();
-    if (outfitAssignments.HasAssignment(actorId) || outfitAssignments.HasAnySituation(actorId)) {
+    if (outfitAssignments.HasAssignment(actorId) || outfitAssignments.HasAnySituation(actorId) ||
+        outfitAssignments.IsRestoreDefaultPending(actorId) || ModOverrides::GetSingleton().Contains(actorId) ||
+        OutfitManager::GetSingleton().IsReturningToOwnOutfit(actorId)) {
         // Auto-reset stagger counter after a gap (new cell transition burst)
         auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -336,7 +390,8 @@ RE::BSEventNotifyControl CellHandler::ProcessEvent(
     }
 
     // Cell attach — re-equip wig if assigned or situational (starts with frame offset so outfit goes first)
-    if (WigAssignments::GetSingleton().HasAssignment(actorId) ||
+    if (WigManager::GetSingleton().HasPendingHeadwear(actor) ||
+        WigAssignments::GetSingleton().HasAssignment(actorId) ||
         WigAssignments::GetSingleton().HasAnySituation(actorId)) {
         DeferWigReEquip(
             actor->GetHandle(),
@@ -360,6 +415,7 @@ RE::BSEventNotifyControl CellHandler::ProcessEvent(
     // Cell finished loading — re-apply hair colors for nearby NPCs.
     // Catches followers who travel with the player (persistent refs).
     WigManager::GetSingleton().ReApplyAllHairColors();
+    WigManager::GetSingleton().SchedulePlayerHairRetint();
 
     return RE::BSEventNotifyControl::kContinue;
 }

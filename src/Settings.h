@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include "ui/imgui/InputMap.h"
 
 class Settings
 {
@@ -14,11 +15,10 @@ public:
     uint32_t GetActivateKey() const { return _activateKey; }
     bool GetRefreshMorphs() const { return _refreshMorphs; }
     bool GetGrantPower() const { return _grantPower; }
-    bool GetAutoFavorite() const { return _autoFavorite; }
     bool GetControllerEnabled() const { return _controllerEnabled; }
-    bool GetControllerShortcutEnabled() const { return _controllerShortcutEnabled; }
-    const std::string& GetControllerButton() const { return _controllerButton; }
-    const std::string& GetControllerModifier() const { return _controllerModifier; }
+    const Tailor::ImGuiUI::input::ControllerBindings& GetControllerBindings() const { return _controllerBindings; }
+    const std::array<std::string, 7>& GetControllerBindingNames() const { return _controllerBindingNames; }
+    const std::string& GetControllerGlyphs() const { return _controllerGlyphs; }
 
 private:
     Settings() = default;
@@ -29,9 +29,8 @@ private:
     uint32_t _activateKey = 0x2C;  // Z
     bool _refreshMorphs = true;
     bool _grantPower = true;
-    bool _autoFavorite = true;
     bool _controllerEnabled = true;
-    bool _controllerShortcutEnabled = true;
-    std::string _controllerButton = "Start";
-    std::string _controllerModifier = "LeftShoulder";
+    Tailor::ImGuiUI::input::ControllerBindings _controllerBindings = Tailor::ImGuiUI::input::DefaultControllerBindings;
+    std::array<std::string, 7> _controllerBindingNames;
+    std::string _controllerGlyphs = "xbox";
 };

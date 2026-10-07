@@ -1,5 +1,6 @@
 #include "preview/TailorPreviewSession.h"
 #include "compat/SmoothCamCompat.h"
+#include "events/SituationWeapons.h"
 #include "ui/TailorUI.h"
 #include <algorithm>
 #include <chrono>
@@ -41,6 +42,17 @@ namespace Tailor::Preview
         {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+
+        // Sheathing dispels a bound weapon, so the preview must not put one away.
+        bool HoldsBoundWeapon(RE::Actor* actor)
+        {
+            for (const bool left : {false, true}) {
+                auto* object = actor->GetEquippedObject(left);
+                auto* weapon = object ? object->As<RE::TESObjectWEAP>() : nullptr;
+                if (weapon && weapon->IsBound()) return true;
+            }
+            return false;
         }
         struct CursorMenuAdvanceMovieHook
         {
@@ -104,11 +116,15 @@ namespace Tailor::Preview
         if (_policy.IsActive()) return _target == a_target;
         auto target = a_target.get();
         auto* actor = target.get();
-        if (!actor || actor->IsDead() || actor->IsPlayerRef() || !actor->Is3DLoaded() || REL::Module::IsVR()) {
+        if (!actor || actor->IsDead() || !actor->Is3DLoaded() || REL::Module::IsVR()) {
             SetStatus(false, "Select a loaded NPC to preview.");
             return false;
         }
         if (!_policy.Begin()) return false;
+        // The preview shows its target's real look: weapons a Sleep or Swimming look hid come back,
+        // and the player's preview hides the player's own itself.
+        SituationWeapons::GetSingleton().Show(actor->GetFormID());
+        _closeQueued = false;
         _target = a_target;
         _viewport = {};
         _lastRoot = actor->Get3D(false);
@@ -121,6 +137,19 @@ namespace Tailor::Preview
         _cameraApplied = false;
         _framingValid = false;
         _baseApproach = {};
+        _framedFeet = {};
+        // The preview frames the third-person body, which first person does not draw, and hides
+        // the player's weapons, so drawn ones are put away, never a bound weapon, which sheathing
+        // dispels. Flags carried over a target switch stay set until the session really ends.
+        if (actor->IsPlayerRef()) {
+            if (auto* camera = RE::PlayerCamera::GetSingleton(); camera && camera->IsInFirstPerson() && camera->ForceThirdPerson()) {
+                _restoreFirstPerson = true;
+            }
+            if (auto* state = actor->AsActorState(); state && PutAwayForPreview(state->GetWeaponState(), HoldsBoundWeapon(actor))) {
+                actor->DrawWeaponMagicHands(false);
+                _redrawWeapons = true;
+            }
+        }
         AcquireTargetHold(actor);
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
             auto& flags = player->GetGameStatsData().byCharGenFlag;
@@ -129,7 +158,7 @@ namespace Tailor::Preview
                 _policy.Acquire(Ownership::SavingDisabled);
             }
         }
-        SetStatus(false, "Preparing live NPC preview...");
+        SetStatus(false, actor->IsPlayerRef() ? "Preparing the live preview..." : "Preparing live NPC preview...");
         (void)_policy.Activate();
         logger::info("Tailor live actor preview: target={:08X}, movement-only hold, AI enabled={} (unchanged)",
             actor->GetFormID(), actor->IsAIEnabled());
@@ -137,6 +166,8 @@ namespace Tailor::Preview
     }
     void TailorPreviewSession::AcquireTargetHold(RE::Actor* actor)
     {
+        // The player is never held; menu input already stops their walking.
+        if (actor->IsPlayerRef()) return;
         _movementHold.Acquire(*actor);
     }
     void TailorPreviewSession::EnforceMovementHold(RE::Actor* actor)
@@ -155,10 +186,16 @@ namespace Tailor::Preview
     void TailorPreviewSession::End(EndReason reason) noexcept
     {
         std::scoped_lock lock(_mutex);
-        if (!_policy.BeginTeardown()) return;
+        if (!_policy.BeginTeardown()) {
+            // No session to end, but a Begin that failed after a target switch leaves that
+            // switch's restores pending: settle them now.
+            RestoreAfterSession(reason);
+            return;
+        }
         _targetFormID.store(0);
         _scene.End();
         ReleaseCamera();
+        RestoreAfterSession(reason);
         auto target = _target.get();
         ReleaseTargetHold(target.get());
         if (_policy.Owns(Ownership::SavingDisabled)) {
@@ -176,6 +213,20 @@ namespace Tailor::Preview
         logger::info("Tailor live actor preview ended (reason={})", static_cast<unsigned>(reason));
     }
 
+    // Back to first person, and weapons out again, once the session really ends: a target
+    // switch keeps both pending, a load or new game forgets them, and a dead player gets neither.
+    void TailorPreviewSession::RestoreAfterSession(EndReason reason) noexcept
+    {
+        const bool targetSwitch = reason == EndReason::TargetSwitched;
+        const bool worldReverting = reason == EndReason::PreLoadGame || reason == EndReason::NewGame;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        const bool alive = player && !player->IsDead();
+        if (TakeEndOfSessionRestore(_restoreFirstPerson, targetSwitch, worldReverting) && alive) {
+            if (auto* camera = RE::PlayerCamera::GetSingleton()) camera->ForceFirstPerson();
+        }
+        if (TakeEndOfSessionRestore(_redrawWeapons, targetSwitch, worldReverting) && alive) player->DrawWeaponMagicHands(true);
+    }
+
     void TailorPreviewSession::SetViewport(ViewportRect viewport)
     {
         if (!viewport.IsValid()) return;
@@ -187,18 +238,17 @@ namespace Tailor::Preview
 
     void TailorPreviewSession::Tick(std::uint64_t generation)
     {
+        std::unique_lock lock(_mutex);
+        if (!_policy.IsActive() || !_policy.Accepts(generation) || _closeQueued) return;
         auto& ui = TailorUI::GetSingleton();
         if (!ui.IsOpen() || !ui.HasFocus()) {
-            ui.CloseForLifecycle(ui.IsOpen() ? EndReason::FocusLost : EndReason::UserClose);
+            QueueClose(generation, ui.IsOpen() ? EndReason::FocusLost : EndReason::UserClose);
             return;
         }
-        std::unique_lock lock(_mutex);
-        if (!_policy.IsActive() || !_policy.Accepts(generation)) return;
         auto target = _target.get();
         auto* actor = target.get();
         const auto close = [&](EndReason reason) {
-            lock.unlock();
-            ui.CloseForLifecycle(reason);
+            QueueClose(generation, reason);
         };
         if (!actor || actor->IsDead() || actor->IsDisabled()) {
             close(EndReason::TargetLost);
@@ -212,6 +262,8 @@ namespace Tailor::Preview
             _refresh.Request(now);
         }
         EnforceMovementHold(actor);
+        // The player is not held: when something moves them, frame them where they stand.
+        if (actor->IsPlayerRef() && _framingValid && NeedsRecenter(_framedFeet, actor->GetPosition())) _framingValid = false;
         auto* root = actor->Get3D(false);
         if (!root) {
             if (!_missing3DSince) _missing3DSince = now;
@@ -253,6 +305,18 @@ namespace Tailor::Preview
                 return;
             }
             if (smoothCam.OwnsCameraControl()) _policy.Acquire(Ownership::ExternalCamera);
+            // Forcing third person, or a target switch, can leave the engine between views for a
+            // few frames: wait within the camera budget for ordinary first or third person.
+            if (auto* camera = RE::PlayerCamera::GetSingleton(); camera && camera->currentState &&
+                !camera->IsInFirstPerson() && !camera->IsInThirdPerson()) {
+                if (!_cameraWaitStarted) _cameraWaitStarted = now;
+                if (now - _cameraWaitStarted > 2000) {
+                    logger::warn("Tailor preview camera declined: camera state {} is not ordinary first/third person",
+                        static_cast<std::uint32_t>(camera->currentState->id));
+                    close(EndReason::SetupFailed);
+                }
+                return;
+            }
             if (!AcquireCamera(actor) || !_scene.Begin(actor)) {
                 close(EndReason::SetupFailed);
                 return;
@@ -270,6 +334,30 @@ namespace Tailor::Preview
         const bool sendStatus = std::exchange(_statusDirty, false);
         lock.unlock();
         if (sendStatus) ui.SendPreviewState();
+    }
+
+    void TailorPreviewSession::QueueClose(std::uint64_t generation, EndReason reason)
+    {
+        if (_closeQueued) return;
+        _closeQueued = true;
+        const auto openGeneration = TailorUI::GetSingleton().OpenGeneration();
+        SKSE::GetTaskInterface()->AddTask([this, generation, openGeneration, reason] {
+            // A worker from an earlier preview must never tear down a later opening.
+            auto& ui = TailorUI::GetSingleton();
+            {
+                std::scoped_lock lock(_mutex);
+                if (!_policy.IsActive() || !_policy.Accepts(generation)) return;
+                if (ui.OpenGeneration() != openGeneration) {
+                    // Begin may precede the UI's generation publish during a target switch.
+                    // The close is obsolete, but this still-active preview must keep ticking.
+                    _closeQueued = false;
+                    return;
+                }
+            }
+            logger::info("Tailor preview requested close: generation={}, reason={}",
+                generation, static_cast<unsigned>(reason));
+            ui.CloseForLifecycle(reason);
+        });
     }
 
     void TailorPreviewSession::SetOrbit(float yaw, std::uint64_t sequence)
@@ -337,7 +425,7 @@ namespace Tailor::Preview
         _savedFOV = camera->GetRuntimeData2().worldFOV;
         _initialCameraPosition = worldCamera->world.translate;
 
-        camera->ToggleFreeCameraMode(false);
+        ToggleFreeCameraKeepingControls(*camera, RE::ControlMap::GetSingleton());
         if (camera->currentState.get() != freeState) {
             logger::warn("Tailor preview camera declined: free-camera transition failed");
             freeState->translation = _savedFreeTranslation;
@@ -426,7 +514,7 @@ namespace Tailor::Preview
         }
 
         if (stillOwned) {
-            camera->ToggleFreeCameraMode(false);
+            ToggleFreeCameraKeepingControls(*camera, RE::ControlMap::GetSingleton());
             if (_savedCameraState && camera->currentState.get() != _savedCameraState.get()) {
                 camera->SetState(_savedCameraState.get());
             }
@@ -498,6 +586,7 @@ namespace Tailor::Preview
         const auto fit = FitViewport(_viewport.x, _viewport.y, _viewport.width, _viewport.height,
             envelope.halfWidth, envelope.halfHeight, tanHalfHorizontal, tanHalfVertical);
         _framingCenter = center;
+        _framedFeet = feet;
         _framingDistance = fit.distance;
         _framingFit = fit;
         _framingValid = std::isfinite(fit.distance) && std::isfinite(fit.lateral) &&

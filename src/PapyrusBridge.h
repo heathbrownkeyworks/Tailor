@@ -15,7 +15,7 @@ namespace PapyrusBridge
 
     // Actor.SetDontMove(bool) dispatched via the Papyrus VM.
     //
-    // Used with SetRestrained while the Tailor UI is open to stop behavior packages
+    // Used with SetRestrained while the Tailor UI is open to stop AI packages
     // from continuing pathing movement during outfit/wig work.
     bool SetActorDontMove(RE::Actor* actor, bool dontMove);
 }

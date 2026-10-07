@@ -22,6 +22,7 @@ namespace Tailor::Preview
         void KeepActorVisible(RE::NiAVObject* node);
         void ReleaseDetachedDrawNodes();
         void Sweep(RE::Actor* actor);
+        void HideWeapons(RE::Actor* actor);
         void HideWorldFeeders();
 
         RE::NiPointer<RE::ShadowSceneNode> _scene;
@@ -31,11 +32,15 @@ namespace Tailor::Preview
         RE::NiPointer<RE::NiAVObject> _actorRoot;
         std::array<RE::NiPointer<RE::NiPointLight>, 2> _lights;
         VisibilityLedger<RE::NiPointer<RE::NiAVObject>> _hidden;
+        // The player's weapons, quiver, torch and scabbards while the player is the target. The
+        // world ledger cannot hold them: it never hides anything under the target's root.
+        VisibilityLedger<RE::NiPointer<RE::NiAVObject>> _weapons;
         std::unordered_map<RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> _alwaysDraw;
         std::int64_t _nextSweep{0};
         RE::NiPoint3 _lastCamera{}, _lastApproach{};
         std::uint64_t _worldFeederReculls{0};
         RE::TESObjectCELL* _cell{nullptr}; // identity only, session ends on cell change
         bool _logged{false};
+        bool _hideWeapons{false};
     };
 }

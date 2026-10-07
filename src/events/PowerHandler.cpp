@@ -2,6 +2,7 @@
 
 #include "events/PowerHandler.h"
 #include "Settings.h"
+#include "PreferenceStore.h"
 #include "ui/TailorUI.h"
 
 namespace
@@ -46,36 +47,41 @@ void PowerHandler::GrantTailorPower()
         return;
     }
 
-    // Favorite only when the spell is newly granted, so removing it from
-    // Favorites later is respected instead of being undone on every load.
-    if (player->HasSpell(spell)) {
-        return;
+    if (!player->HasSpell(spell)) {
+        player->AddSpell(spell);
+        logger::info("PowerHandler: Granted {}", kTailorPowerEditorID);
     }
+    ApplyFavorite();
+}
 
-    player->AddSpell(spell);
-    logger::info("PowerHandler: Granted {}", kTailorPowerEditorID);
-
-    if (!Settings::GetSingleton().GetAutoFavorite()) {
-        return;
-    }
+// Runs on every new game and load, and when the setting changes.
+void PowerHandler::ApplyFavorite()
+{
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* spell = LookupTailorPower();
+    if (!player || !spell || !player->HasSpell(spell)) return;
 
     auto* magicFavorites = RE::MagicFavorites::GetSingleton();
     if (!magicFavorites) {
-        logger::warn("PowerHandler: MagicFavorites unavailable; {} was not added to favorites", kTailorPowerEditorID);
+        logger::warn("PowerHandler: MagicFavorites unavailable; {} was not updated", kTailorPowerEditorID);
         return;
     }
 
-    bool alreadyFavorite = false;
-    for (auto* favorite : magicFavorites->spells) {
-        if (favorite && favorite->GetFormID() == spell->GetFormID()) {
-            alreadyFavorite = true;
+    bool favorite = false;
+    for (auto* form : magicFavorites->spells) {
+        if (form && form->GetFormID() == spell->GetFormID()) {
+            favorite = true;
             break;
         }
     }
 
-    if (!alreadyFavorite) {
+    const bool keepOut = PreferenceStore::GetSingleton().Get().disableFavorite;
+    if (keepOut && favorite) {
+        magicFavorites->RemoveFavorite(spell);
+        logger::info("PowerHandler: removed {} from favorites (Disable Tailor Favorite)", kTailorPowerEditorID);
+    } else if (!keepOut && !favorite) {
         magicFavorites->SetFavorite(spell);
-        logger::info("PowerHandler: Added {} to favorites", kTailorPowerEditorID);
+        logger::info("PowerHandler: added {} to favorites", kTailorPowerEditorID);
     }
 }
 
@@ -98,7 +104,9 @@ RE::BSEventNotifyControl PowerHandler::ProcessEvent(
     }
 
     SKSE::GetTaskInterface()->AddTask([]() {
-        TailorUI::GetSingleton().Toggle();
+        // A spell cast can arrive after the opening shortcut. It must not close it.
+        logger::info("Tailor activation: lesser power open");
+        TailorUI::GetSingleton().Open();
     });
 
     return RE::BSEventNotifyControl::kContinue;

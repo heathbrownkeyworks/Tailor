@@ -1,4 +1,5 @@
 #include "keyhandler.h"
+#include "ui/imgui/InputDispatchHook.h"
 
 KeyHandler* KeyHandler::GetSingleton()
 {
@@ -96,7 +97,7 @@ void KeyHandler::Unregister(KeyHandlerEvent handle)
 
 RE::BSEventNotifyControl KeyHandler::ProcessEvent(RE::InputEvent* const* a_eventList, [[maybe_unused]] RE::BSTEventSource<RE::InputEvent*>* a_eventSource)
 {
-    if (!a_eventList) {
+    if (!a_eventList || Tailor::ImGuiUI::IsForwardingInput()) {
         return RE::BSEventNotifyControl::kContinue;
     }
 

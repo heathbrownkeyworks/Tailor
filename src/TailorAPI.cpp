@@ -1,9 +1,11 @@
 #include "pch.h"
 
 #include "TailorAPI.h"
+#include "api/ModApi.h"
 #include "ui/TailorUI.h"
 
 #include <atomic>
+#include <cstdint>
 
 namespace
 {
@@ -35,15 +37,17 @@ namespace TailorAPI
 //  A null module handle just means Tailor is not installed, so callers
 //  should treat every one of these as optional.
 //
-//  All four are safe to call from any thread. Open/Close marshal onto the
-//  game thread via the SKSE task interface, so they return immediately and
-//  the UI changes on the next frame.
+//  The four UI functions are safe to call from any thread. Open/Close
+//  marshal onto the game thread via the SKSE task interface, so they
+//  return immediately and the UI changes on the next frame.
 // ================================================================
 
 extern "C"
 {
-    // Opens the Tailor UI on the NPC under the crosshair. No-op if already
-    // open, or if another Meridian UI view currently holds focus.
+    // Opens the Tailor UI on the NPC under the crosshair, or on the player when
+    // there is none. No-op if already open, or while the game cannot safely show
+    // the native menu. With a child under the crosshair it doesn't open: Tailor
+    // never handles children, and shows a HUD message instead.
     DLLEXPORT void OpenTailor()
     {
         if (auto* task = SKSE::GetTaskInterface()) {
@@ -80,5 +84,12 @@ extern "C"
     DLLEXPORT bool IsTailorOpen()
     {
         return TailorUI::GetSingleton().IsOpen();
+    }
+
+    // Tailor 3.0: the mod API's C++ interface, TailorAPI::ITailorInterface1 for version 1 (the same
+    // instance on every call), else nullptr. docs/api/TailorAPI.h's RequestInterface1() calls it.
+    DLLEXPORT void* RequestTailorInterface(std::uint32_t version)
+    {
+        return version == 1 ? Tailor::Api::Interface1() : nullptr;
     }
 }

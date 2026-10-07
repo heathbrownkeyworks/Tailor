@@ -32,7 +32,6 @@ bool InstallSmoothCamCameraHook()
             logger::warn("SmoothCamCompat: main-update call is unsupported; camera requests disabled");
             return;
         }
-        SKSE::AllocTrampoline(14);
         MainUpdateCameraRequests::func = SKSE::GetTrampoline().write_call<5>(
             call, MainUpdateCameraRequests::thunk);
         installed = true;

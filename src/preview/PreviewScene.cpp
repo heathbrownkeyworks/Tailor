@@ -1,11 +1,11 @@
 #include "preview/PreviewScene.h"
+#include "preview/PreviewSessionPolicy.h"
 
 #include <algorithm>
 #include <cmath>
 
 // Live-world isolation informed by Menu Studio's Declutter/StudioRig code:
 // https://github.com/maartenharms/menu-studio/tree/8b64be319916223f7bc42700a48ec01ce190b9aa
-// See THIRD-PARTY-NOTICES.md for attribution.
 namespace Tailor::Preview
 {
     namespace
@@ -35,6 +35,7 @@ namespace Tailor::Preview
     bool PreviewScene::Begin(RE::Actor* actor)
     {
         _actorRoot.reset(actor ? actor->Get3D(false) : nullptr);
+        _hideWeapons = actor && actor->IsPlayerRef();
         _scene.reset(SceneOf(_actorRoot.get()));
         _stageParent.reset(_actorRoot ? _actorRoot->parent : nullptr);
         _cell = actor ? actor->GetParentCell() : nullptr;
@@ -183,16 +184,38 @@ namespace Tailor::Preview
         }
         // First- and third-person player roots are distinct; retain the exact
         // nodes in the ledger instead of restoring through ambiguous Get3D().
+        // When the player is the target, HideBranch skips their third-person root
+        // (it is the protected actor root) and hides only the first-person skeleton.
         if (auto* player = RE::PlayerCharacter::GetSingleton()) {
             HideBranch(player->Get3D(false));
             HideBranch(player->Get3D(true));
         }
         KeepActorVisible(_actorRoot.get());
+        if (_hideWeapons) HideWeapons(actor);
         if (!_logged) {
-            logger::info("Tailor live scene isolated: target={:08X}, hidden nodes={}, actor/stage draw nodes={}",
-                actor->GetFormID(), _hidden.Size(), _alwaysDraw.size());
+            logger::info("Tailor live scene isolated: target={:08X}, hidden nodes={}, actor/stage draw nodes={}, hidden weapon nodes={}",
+                actor->GetFormID(), _hidden.Size(), _alwaysDraw.size(), _weapons.Size());
             _logged = true;
         }
+    }
+
+    void PreviewScene::HideWeapons(RE::Actor* actor)
+    {
+        // Weapons drawn or sheathed, the quiver and a held torch. Armor, shields included, stays.
+        if (const auto biped = actor->GetBiped(false)) {
+            for (const auto& part : biped->objects) {
+                if (part.item && part.partClone && HiddenInPlayerPreview(part.item->GetFormType()) &&
+                    AncestorOrSelf(_actorRoot.get(), part.partClone.get())) {
+                    _weapons.Hide(part.partClone.get());
+                }
+            }
+        }
+        // A drawn weapon leaves its scabbard on the body, and Immersive Equipment Displays shows
+        // unequipped weapons, quivers and torches with models of its own.
+        RE::BSVisit::TraverseScenegraphObjects(_actorRoot.get(), [&](RE::NiAVObject* node) {
+            if (HiddenNodeInPlayerPreview(node->name.c_str())) _weapons.Hide(node);
+            return RE::BSVisit::BSVisitControl::kContinue;
+        });
     }
 
     void PreviewScene::HideWorldFeeders()
@@ -305,6 +328,8 @@ namespace Tailor::Preview
         // before every tick; CursorMenu must not compete with those updates.
         HideWorldFeeders();
         _hidden.Reassert([&](const RE::NiAVObject* node) { return Protected(node); });
+        // Keep the player's weapons hidden; forget nodes a model rebuild took off the target.
+        _weapons.Reassert([&](const RE::NiAVObject* node) { return !AncestorOrSelf(_actorRoot.get(), node); });
         const bool cameraChanged = camera != _lastCamera || approach != _lastApproach;
         if (rebuilt || appearanceChanged || cameraChanged || now >= _nextSweep) {
             Sweep(actor);
@@ -319,6 +344,7 @@ namespace Tailor::Preview
     {
         if (_logged) logger::info("Tailor preview background: world feeder visibility reasserted {} time(s)", _worldFeederReculls);
         _hidden.Restore();
+        _weapons.Restore();
         for (auto& [node, hold] : _alwaysDraw) node->GetFlags().reset(RE::NiAVObject::Flag::kAlwaysDraw);
         _alwaysDraw.clear();
         for (auto& light : _lights) {
@@ -335,6 +361,7 @@ namespace Tailor::Preview
         _actorRoot.reset();
         _scene.reset();
         _cell = nullptr;
+        _hideWeapons = false;
         _nextSweep = 0;
     }
 }

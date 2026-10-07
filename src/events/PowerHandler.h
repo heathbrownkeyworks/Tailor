@@ -6,6 +6,8 @@ public:
     static PowerHandler& GetSingleton();
     static void Register();
     static void GrantTailorPower();
+    // Disable Tailor Favorite: while on, the power stays out of Favorites; while off, Tailor keeps it there.
+    static void ApplyFavorite();
 
     RE::BSEventNotifyControl ProcessEvent(
         const RE::TESSpellCastEvent* event,

@@ -1,6 +1,7 @@
 #include "wig/CustomColorLibrary.h"
 
 #include <fstream>
+#include "persistence/JsonFile.h"
 
 CustomColorLibrary& CustomColorLibrary::GetSingleton()
 {
@@ -18,57 +19,70 @@ std::filesystem::path CustomColorLibrary::GetPath() const
 void CustomColorLibrary::Load()
 {
     std::lock_guard lock(_mutex);
-    _colors.clear();
-
-    auto path = GetPath();
-    logger::info("CustomColorLibrary: loading from {}", path.string());
-
-    if (!std::filesystem::exists(path)) {
-        logger::info("CustomColorLibrary: no customcolors.json found, starting empty");
-        return;
-    }
-
+    // Saves stay off until this load has read the whole file, as for the wig files. Adding or
+    // deleting a color still works for the session.
+    _saveAllowed = false;
     try {
+        const auto path = GetPath();
+        logger::info("CustomColorLibrary: loading from {}", path.string());
+
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) {
+            // A file Tailor can't check is not a missing file: saves stay off.
+            if (error) throw std::filesystem::filesystem_error("could not check customcolors.json", path, error);
+            _colors.clear();
+            _saveAllowed = true;
+            logger::info("CustomColorLibrary: no customcolors.json found, starting empty");
+            return;
+        }
+
         std::ifstream file(path);
-        if (!file.is_open()) {
-            logger::error("CustomColorLibrary: failed to open {} for reading", path.string());
-            return;
+        const auto json = nlohmann::json::parse(file);
+        if (!json.is_object() || (json.contains("version") && json["version"] != 1) ||
+            !json.contains("colors") || !json["colors"].is_array()) {
+            throw std::runtime_error("unsupported custom color document");
         }
 
-        nlohmann::json json;
-        file >> json;
-
-        if (!json.contains("colors") || !json["colors"].is_array()) {
-            logger::warn("CustomColorLibrary: no 'colors' array in {}", path.string());
-            return;
-        }
-
-        for (auto& entry : json["colors"]) {
-            if (!entry.is_object()) continue;
-            int r = entry.value("r", -1);
-            int g = entry.value("g", -1);
-            int b = entry.value("b", -1);
-            if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
-                logger::warn("CustomColorLibrary: skipping out-of-range color ({},{},{})", r, g, b);
-                continue;
+        std::vector<RGBColor> parsed;
+        bool complete = true;
+        std::size_t row = 0;
+        for (const auto& entry : json["colors"]) {
+            ++row;
+            try {
+                if (!entry.is_object()) throw std::runtime_error("the row is not a color");
+                // A channel that is missing or isn't a whole number makes the row a bad one.
+                const auto channel = [&entry](const char* name) {
+                    const auto& value = entry.at(name);
+                    if (!value.is_number_integer()) throw std::runtime_error(std::format("\"{}\" is not a whole number", name));
+                    return value.get<std::int64_t>();
+                };
+                const auto r = channel("r"), g = channel("g"), b = channel("b");
+                // Out of range is skipped without turning saves off, as it always was.
+                if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
+                    logger::warn("CustomColorLibrary: skipping out-of-range color ({},{},{})", r, g, b);
+                    continue;
+                }
+                parsed.push_back({static_cast<std::uint8_t>(r), static_cast<std::uint8_t>(g), static_cast<std::uint8_t>(b)});
+            } catch (const std::exception& e) {
+                complete = false;
+                logger::error("CustomColorLibrary: color row {} could not load; the other colors stay, customcolors.json is kept as it is and saves are off: {}", row, e.what());
             }
-            _colors.push_back({
-                static_cast<std::uint8_t>(r),
-                static_cast<std::uint8_t>(g),
-                static_cast<std::uint8_t>(b)
-            });
         }
-
+        _colors = std::move(parsed);
+        _saveAllowed = complete;
         logger::info("CustomColorLibrary: loaded {} custom color(s)", _colors.size());
-    }
-    catch (const std::exception& e) {
-        logger::error("CustomColorLibrary: failed to parse {}: {}", path.string(), e.what());
+    } catch (const std::exception& e) {
+        logger::error("CustomColorLibrary: could not load customcolors.json; the file is kept as it is and saves are off: {}", e.what());
     }
 }
 
 void CustomColorLibrary::Save() const
 {
     std::lock_guard lock(_mutex);
+    if (!_saveAllowed) {
+        logger::error("CustomColorLibrary: save skipped because customcolors.json was not loaded completely");
+        return;
+    }
 
     nlohmann::json json;
     json["version"] = 1;
@@ -84,13 +98,12 @@ void CustomColorLibrary::Save() const
 
     try {
         auto path = GetPath();
-        std::ofstream file(path);
-        if (!file.is_open()) {
-            logger::error("CustomColorLibrary: failed to open {} for writing", path.string());
+        const auto contents = json.dump(2);
+        std::string error;
+        if (!Tailor::Persistence::WriteJsonFile(path, contents, error)) {
+            logger::error("CustomColorLibrary: failed to save {}: {}", path.string(), error);
             return;
         }
-        file << json.dump(2);
-        file.flush();
         logger::info("CustomColorLibrary: saved {} custom color(s) to {}", _colors.size(), path.string());
     }
     catch (const std::exception& e) {

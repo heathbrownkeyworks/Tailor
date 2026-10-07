@@ -2,6 +2,7 @@
 
 #include "wig/WigCategory.h"
 #include <array>
+#include <cstdint>
 #include <vector>
 #include <mutex>
 #include <filesystem>
@@ -20,6 +21,10 @@ public:
     void AddWig(WigCategory cat, const WigEntry& entry);
     bool RemoveWig(WigCategory cat, const WigEntry& entry);
     bool HasWig(WigCategory cat, const WigEntry& entry) const;
+    // Every library wig that resolves, as forms.
+    std::vector<RE::TESObjectARMO*> ResolvedWigs() const;
+    // Counts every change to the library (load, add, remove, clear), so a copy of its wigs knows when it is stale.
+    std::uint64_t Revision() const;
 
     void Clear();
 
@@ -33,5 +38,7 @@ private:
     std::filesystem::path GetLibraryPath() const;
 
     std::array<std::vector<WigEntry>, kCategoryCount> _categories;
+    std::uint64_t _revision = 0;
+    bool _saveAllowed = false;
     mutable std::mutex _mutex;
 };

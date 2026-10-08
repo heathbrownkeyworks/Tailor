@@ -11,6 +11,7 @@
 #include "outfit/OutfitManager.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
+#include "outfit/DiscoveredOutfits.h"
 #include "player/PlayerCoSave.h"
 #include "preview/TailorPreviewSession.h"
 #include "wig/CustomColorLibrary.h"
@@ -111,6 +112,7 @@ static void OnPostLoadGame()
     const auto generation = sGameLoadGeneration.load();
     SKSE::GetTaskInterface()->AddTask([generation]() {
         if (generation != sGameLoadGeneration.load()) return;
+		Tailor::Discovered::DiscoveredOutfits::GetSingleton().Regenerate();
         WigManager::GetSingleton().SetRecoveryEnabled(true);
         PowerHandler::GrantTailorPower();
         OutfitManager::GetSingleton().ReApplyAllAssignments();  // outfits first
@@ -177,6 +179,7 @@ static void SKSEMessageHandler(SKSE::MessagingInterface::Message* message)
         // transition first. OBody may remain ready and emit no new callback.
         SKSE::GetTaskInterface()->AddTask([generation]() {
             if (generation != sGameLoadGeneration.load()) return;
+			Tailor::Discovered::DiscoveredOutfits::GetSingleton().Regenerate();
             WigManager::GetSingleton().SetRecoveryEnabled(true);
             OBodyCompat::GetSingleton().OnNewGame();
             PowerHandler::GrantTailorPower();

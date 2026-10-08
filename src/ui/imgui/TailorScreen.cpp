@@ -255,10 +255,10 @@ namespace Tailor::ImGuiUI
                 if (!previous && !next) return;
                 if (state.page == Page::Cycle) Emit(state.wigs ? (next ? "wiggyCycleNext" : "wiggyCyclePrev") : (next ? "tailorCycleNext" : "tailorCyclePrev"));
                 else {
-                    constexpr std::pair<Page, bool> rails[] = {{Page::Main,false},{Page::Library,false},{Page::Situations,false},{Page::Export,false},{Page::Import,false},{Page::Main,true},{Page::Library,true},{Page::HairColor,true},{Page::Situations,true}};
+                    constexpr std::pair<Page, bool> rails[] = {{Page::Main,false},{Page::Library,false},{Page::Discovered,false},{Page::Situations,false},{Page::Export,false},{Page::Import,false},{Page::Main,true},{Page::Library,true},{Page::HairColor,true},{Page::Situations,true}};
                     int selected = 0;
-                    for (int i = 0; i < 9; ++i) if (rails[i].first == state.page && rails[i].second == state.wigs) selected = i;
-                    const auto& target = rails[(selected + (next ? 1 : 8)) % 9];
+                    for (int i = 0; i < 10; ++i) if (rails[i].first == state.page && rails[i].second == state.wigs) selected = i;
+                    const auto& target = rails[(selected + (next ? 1 : 9)) % 10];
                     Navigate(target.first, target.second);
                 }
             }
@@ -274,6 +274,7 @@ namespace Tailor::ImGuiUI
                 case Page::Main: legend.title = state.wigs ? "Wigs" : "Outfits"; break;
                 case Page::Cycle: legend.title = state.wigs ? "Wig preview" : "Dressing"; break;
                 case Page::Library: legend.title = state.wigs ? "Manage wigs" : "Manage outfits"; break;
+				case Page::Discovered: legend.title = "Discovered sets"; break;
                 case Page::Create: legend.title = state.editId ? "Edit outfit" : "Create outfit"; break;
                 case Page::Categories: legend.title = "Categories"; break;
                 case Page::Blacklist: legend.title = state.wigs ? "Wig blacklist" : "Blacklist"; break;
@@ -778,6 +779,7 @@ namespace Tailor::ImGuiUI
                 else if (page == Page::Library) { state.libraryStashed = false; state.libraryFocusId = 0; state.librarySex.reset(); }
                 switch (page) {
                 case Page::Library: if (!wigs) Emit("tailorRequestOutfits"); break;
+                case Page::Discovered: if (!wigs) Emit("tailorRequestDiscovered"); break;
                 case Page::Categories: Emit("tailorRequestAllCategories"); break;
                 case Page::Blacklist: Emit(wigs ? "wiggyRequestBlacklist" : "tailorRequestBlacklist"); break;
                 case Page::Situations: Emit(wigs ? "wiggyRequestWigSituations" : "tailorRequestSituations"); break;
@@ -1458,6 +1460,64 @@ namespace Tailor::ImGuiUI
                 ImGui::EndChild();
                 ImGui::PopStyleColor(2);
             }
+			 void Discovered()
+            {
+                if (Header("DISCOVERED SETS", true, "", Icon::Grid)) Navigate(Page::Main, false);
+                const float content = ImGui::GetWindowWidth() - 40 * scale, listBottom = ImGui::GetWindowHeight() - 102 * scale;
+                ImGui::SetCursorPosX(20 * scale);
+                if (Small("Rescan", Tone::Neutral)) Emit("tailorRescanDiscovered");
+                // Sex filter and search share the row, like the Library page.
+                const float fields = content - 32 * scale, sexWidth = fields * 0.24f;
+                ImGui::SetCursorPosX(20 * scale); ImGui::SetNextItemWidth(sexWidth);
+                if (BeginSelect("##discoveredSex", state.librarySex ? SexLabel(*state.librarySex) : "All Sexes", false, state.librarySex ? SexInk(*state.librarySex) : 0)) {
+                    if (SelectItem("All Sexes", !state.librarySex)) state.librarySex.reset();
+                    for (const int sex : {-1, 1, 0}) if (SelectItem(SexLabel(sex), state.librarySex == sex)) state.librarySex = sex;
+                    EndSelect();
+                }
+                ImGui::SameLine(0, 16 * scale); ImGui::SetNextItemWidth(fields - sexWidth);
+                TextInput("##discoveredSearch", "Search discovered sets...", state.search.data(), state.search.size());
+                ImGui::SetCursorPosX(20 * scale);
+                BeginList("discoveredPage", {content, std::max(100 * scale, listBottom - ImGui::GetCursorPosY())});
+                auto discovered = Rows(Get(model, "tailorSetDiscoveredOutfits"));
+                SortByName(discovered);
+                int dshown = 0;
+                const int dTargetSex = TargetSex(Get(model, "tailorSetTarget"));
+                for (const auto& d : discovered) {
+                    if (!Matches(Text(d, "name"), state.search.data())) continue;
+                    const int dsex = Number(d, "sex", -1);
+                    if (state.librarySex && dsex != *state.librarySex) continue;
+                    const int did = Number(d, "id");
+                    ImGui::PushID(did);
+                    ImVec2 drow; float drowWidth; const float drowHeight = 56 * scale;
+                    if (Row("##discovered", drowHeight, state.previewId == static_cast<std::uint32_t>(did), drow, drowWidth, true, dshown++ % 2)) {
+                        if (!OutfitFits(static_cast<OutfitSex>(dsex), dTargetSex)) {
+                            state.message = "Outfit can't be previewed by the currently selected NPC due to gender";
+                            state.messageDanger = false;
+                        } else {
+                            // BUG 1 FIX: regular outfit rows start the create/edit
+                            // preview session (tailorBeginCreateOutfit) before
+                            // previewing; without it LoadCreateOutfitItems
+                            // silently does nothing on a fresh session.
+                            if (!state.outfitPreview) Emit("tailorBeginCreateOutfit");
+                            state.outfitPreview = true; state.previewId = did;
+                            Emit("tailorPreviewDiscovered", {{"outfitId", did}});
+                        }
+                    }
+                    auto* ddraw = ImGui::GetWindowDrawList();
+                    ddraw->AddText(fonts.medium, Px(14), {drow.x + 16 * scale, drow.y + 8 * scale}, Palette::Text, Text(d, "name").c_str());
+                    ImVec2 dchip{drow.x + 16 * scale, drow.y + drowHeight - 24 * scale};
+                    SexTag(ddraw, dchip, dsex);
+                    const auto dcount = std::to_string(Number(d, "itemCount")) + " pcs";
+                    const float dcountW = fonts.body->CalcTextSizeA(Px(12), FLT_MAX, 0, dcount.c_str()).x;
+                    ddraw->AddText(fonts.body, Px(12), {drow.x + drowWidth - dcountW - 116 * scale, drow.y + (drowHeight - Px(12)) / 2}, Palette::Muted, dcount.c_str());
+                    ImGui::SetCursorScreenPos({drow.x + drowWidth - 104 * scale, drow.y + (drowHeight - 30 * scale) / 2});
+                    if (Small("Save", Tone::Amber)) Emit("tailorSaveDiscovered", {{"outfitId", did}});
+                    ImGui::SetCursorScreenPos({drow.x, drow.y + drowHeight}); ImGui::Dummy({0, 0});
+                    ImGui::PopID();
+                }
+                if (!dshown) { ImGui::SetCursorPos({18 * scale, 18 * scale}); Label(discovered.empty() ? "No discovered sets yet. They are built automatically when a save loads." : "No discovered set matches that search.", Palette::Muted, 13); }
+                EndList();
+            }
             void Help(const char* text)
             {
                 ImGui::PushID(text);
@@ -1483,6 +1543,7 @@ namespace Tailor::ImGuiUI
                 case Page::HairColor: return "Pick a preset swatch to apply its color immediately. Saved custom colors appear alongside the presets. Reset to Default restores the original hair color.";
                 case Page::CustomColors: return "Pick a color from the wheel or type RGB values, then Add to save it. Saved colors appear on the main hair color screen alongside the defaults.";
                 case Page::Library: return state.wigs ? "Click a wig to preview it on the target NPC. Use Move to to recategorize, or remove it from the library." : "Click a row to preview an outfit on the target NPC, or Edit to modify it. Female and Male outfits preview only on NPCs of that sex. Set outfits to... in the header tags every outfit the filters show. Leaving restores the NPC's outfit. Categories organize outfits; Blacklist hides plugins.";
+				case Page::Discovered: return "Auto-detected outfit sets from your installed armor mods. Click a row to preview it on the target NPC. Save copies a set into your outfits as a regular editable outfit. Rescan rebuilds the list from the current load order.";
                 case Page::Create: return "Name your outfit and select one or more categories. Choose who it is for: Unisex fits every NPC; Female and Male fit only NPCs of that sex. Search mods to find armor. Click an item to preview it on the NPC; Add puts it in the outfit. Remove pieces with the X button. The saved outfit is shared across its categories.";
                 case Page::Cycle: return "Use arrow keys or A/D to cycle. Enter confirms. Escape cancels and reverts. Reset removes the assignment entirely.";
                 default: return "";
@@ -2288,6 +2349,7 @@ namespace Tailor::ImGuiUI
             railButton("Outfit Situations", Page::Situations, false, 2);
             railButton("Export Outfits", Page::Export, false, 3);
             railButton("Import Outfits", Page::Import, false, 4);
+			railButton("Discovered Sets", Page::Discovered, false, 6);
             ImGui::End();
             window("Tailor Wig Rail", ImVec2(width - rail, 0), ImVec2(rail, contentHeight));
             railButton("Wigs", Page::Main, true, 5);
@@ -2305,6 +2367,7 @@ namespace Tailor::ImGuiUI
             case Page::Main: Main(); break;
             case Page::Cycle: Cycle(); break;
             case Page::Library: Library(); break;
+			case Page::Discovered: Discovered(); break;
             case Page::Create: Create(); break;
             case Page::Categories: Categories(); break;
             case Page::Blacklist: Blacklist(); break;

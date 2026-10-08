@@ -9,6 +9,7 @@
 #include "outfit/OutfitAssignments.h"
 #include "outfit/OutfitLibrary.h"
 #include "outfit/OutfitStore.h"
+#include "outfit/DiscoveredOutfits.h"
 #include "outfit/OutfitTransfer.h"
 #include "persistence/JsonFile.h"
 #include "player/PlayerTarget.h"
@@ -424,6 +425,45 @@ void TailorUI::Initialize()
             TailorUI::GetSingleton().SendOutfits();
         });
     });
+	
+	// Discovered outfits (Fitting Room auto-discovery port) — send the
+    // read-only discovered sets, re-run the pipeline, preview one on the
+    // target NPC through the same temporary session as tailorPreviewOutfit.
+    RegisterAction("tailorRequestDiscovered", [](const char*) {
+        QueueOpenAction([]() {
+            TailorUI::GetSingleton().SendDiscoveredOutfits();
+        });
+    });
+
+    RegisterAction("tailorRescanDiscovered", [](const char*) {
+        QueueOpenAction([]() {
+            Tailor::Discovered::DiscoveredOutfits::GetSingleton().Regenerate();
+            TailorUI::GetSingleton().SendDiscoveredOutfits();
+        });
+    });
+
+    RegisterAction("tailorPreviewDiscovered", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!TailorUI::GetSingleton().IsOpen()) return;
+            try {
+                const auto json = nlohmann::json::parse(d);
+                const int outfitId = json.value("outfitId", 0);
+                auto outfit = Tailor::Discovered::DiscoveredOutfits::GetSingleton().GetById(outfitId);
+                auto& mgr = OutfitManager::GetSingleton();
+                auto* target = mgr.GetTarget();
+                // The screen refuses these with its toast; never dress the target in one anyway.
+                if (outfit && target && !OutfitFits(outfit->sex, OutfitManager::GetNpcSex(target))) {
+                    logger::info("tailorPreviewDiscovered: '{}' does not fit {}", outfit->name, target->GetDisplayFullName());
+                    return;
+                }
+                if (outfit && target) {
+                    mgr.LoadCreateOutfitItems(target, outfit->items);
+                }
+            } catch (const nlohmann::json::exception& e) {
+                logger::error("tailorPreviewDiscovered: {}", e.what());
+            }
+        });
+    });
 
     // 8. tailorAddOutfitToCategory
     RegisterAction("tailorAddOutfitToCategory", [](const char* arg) {
@@ -747,6 +787,48 @@ void TailorUI::Initialize()
                 }
             } catch (const nlohmann::json::exception& e) {
                 logger::error("tailorPreviewOutfit: {}", e.what());
+            }
+        });
+    });
+	
+	// Save a discovered set as a regular outfit. Name collisions are
+    // resolved automatically: "Abyss" -> "Abyss (2)" -> "Abyss (3)" ...
+    RegisterAction("tailorSaveDiscovered", [](const char* arg) {
+        QueueOpenAction([d = std::string(arg)]() {
+            if (!TailorUI::GetSingleton().IsOpen()) return;
+            try {
+                const auto json = nlohmann::json::parse(d);
+                const int outfitId = json.value("outfitId", 0);
+                auto discovered = Tailor::Discovered::DiscoveredOutfits::GetSingleton().GetById(outfitId);
+                if (!discovered || discovered->items.empty()) return;
+                auto& store = OutfitStore::GetSingleton();
+                if (!store.SaveAllowed()) {
+                    TailorUI::GetSingleton().Publish("toast", {{"message", "Outfits can't be saved right now (outfits.json didn't load cleanly)"}, {"kind", "danger"}});
+                    return;
+                }
+                std::string name = discovered->name;
+                if (store.NameTaken(name)) {
+                    int n = 2;
+                    while (store.NameTaken(name + " (" + std::to_string(n) + ")")) ++n;
+                    name += " (" + std::to_string(n) + ")";
+                }
+                const int newId = store.AddOutfit(name, discovered->items, discovered->sex);
+                if (newId == 0) {
+                    TailorUI::GetSingleton().ShowLibraryProblem(kOutfitNotCreated);
+                    return;
+                }
+                if (!store.Save()) {
+                    store.DiscardNewOutfit(newId);
+                    TailorUI::GetSingleton().ShowLibraryProblem(SaveFailed("outfits.json"));
+                    TailorUI::GetSingleton().SendOutfits();
+                    return;
+                }
+                TailorUI::GetSingleton().SendOutfits();
+                TailorUI::GetSingleton().Publish("toast", std::string("Saved '") + name + "' as a new outfit");
+                logger::info("tailorSaveDiscovered: saved '{}' (id={}) with {} items",
+                    name, newId, discovered->items.size());
+            } catch (const std::exception& e) {
+                logger::error("tailorSaveDiscovered: {}", e.what());
             }
         });
     });
@@ -2169,6 +2251,23 @@ void TailorUI::SendOutfits()
     }
 
     Publish("tailorSetOutfits", arr);
+}
+
+void TailorUI::SendDiscoveredOutfits()
+{
+    auto outfits = Tailor::Discovered::DiscoveredOutfits::GetSingleton().Snapshot();
+
+    nlohmann::json arr = nlohmann::json::array();
+    for (auto& outfit : outfits) {
+        arr.push_back({
+            {"id", outfit.id},
+            {"name", outfit.name},
+            {"sex", static_cast<int>(outfit.sex)},
+            {"itemCount", static_cast<int>(outfit.items.size())},
+        });
+    }
+
+    Publish("tailorSetDiscoveredOutfits", arr);
 }
 
 void TailorUI::SendCategoryOutfits(int categoryId)

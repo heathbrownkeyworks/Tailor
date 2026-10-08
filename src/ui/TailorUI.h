@@ -40,6 +40,7 @@ public:
     void SendCategories();
     void SendCycleState();
     void SendOutfits();
+	void SendDiscoveredOutfits();
     void SendCategoryOutfits(int categoryId);
     void SendArmorPlugins();
     void SendArmorForPlugin(const std::string& plugin);

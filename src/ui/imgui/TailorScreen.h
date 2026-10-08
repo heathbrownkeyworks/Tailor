@@ -9,7 +9,7 @@
 
 namespace Tailor::ImGuiUI
 {
-    enum class Page { Main, Cycle, Library, Create, Categories, Blacklist, Situations, Export, Import, HairColor, CustomColors, AddWigs, Settings };
+    enum class Page { Main, Cycle, Library, Discovered, Create, Categories, Blacklist, Situations, Export, Import, HairColor, CustomColors, AddWigs, Settings };
     struct ScreenState
     {
         Page page = Page::Main;
